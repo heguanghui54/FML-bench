@@ -11,6 +11,7 @@ import csv
 import hashlib
 import json
 import math
+import re
 import statistics
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -136,13 +137,13 @@ def _pipeline_architecture(path: Path) -> None:
         (678, "Replication + ablation"),
         (896, "Process metrics"),
         (1114, "Evidence freeze"),
-        (1332, "Protected test"),
+        (1332, "Protected test + stats"),
     ]
     for index, (x, label) in enumerate(research):
         box(x, 222, 188, label, OKABE_ITO[index % len(OKABE_ITO)])
         if index:
             arrow(x - 28, 249, x - 5, 249)
-    body.append('<text x="1426" y="293" text-anchor="middle" class="small">one-way; never search feedback</text>')
+    body.append('<text x="1426" y="293" text-anchor="middle" class="small">matched analysis; never search feedback</text>')
 
     body.append('<text x="24" y="350" class="label">Paper and review lane</text>')
     writing = [
@@ -341,6 +342,7 @@ def summarize_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 _EXPECTED_TASKS_BY_PHASE = {"pilot": 2, "confirmatory_lite": 8, "confirmatory_full": 18}
+_EXPECTED_TRIALS_BY_PHASE = {"pilot": 1, "confirmatory_lite": 3, "confirmatory_full": 3}
 
 
 def summarize_agent_performance(
@@ -401,44 +403,194 @@ def summarize_agent_performance(
     return trial_rows, overall_rows
 
 
-def paired_agent_comparisons(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    values = {
-        (
+def _paired_summary(values: list[float]) -> dict[str, Any]:
+    n = len(values)
+    if not values:
+        return {
+            "n": 0, "mean": None, "median": None, "sd": None,
+            "ci_halfwidth": None, "ci_low": None, "ci_high": None,
+            "cohen_dz": None,
+        }
+    mean = statistics.fmean(values)
+    sd = statistics.stdev(values) if n >= 2 else None
+    ci = _t95(n - 1) * sd / math.sqrt(n) if sd is not None else None
+    return {
+        "n": n,
+        "mean": mean,
+        "median": statistics.median(values),
+        "sd": sd,
+        "ci_halfwidth": ci,
+        "ci_low": mean - ci if ci is not None else None,
+        "ci_high": mean + ci if ci is not None else None,
+        "cohen_dz": mean / sd if sd is not None and sd > 0 else None,
+    }
+
+
+def _sign_counts(values: list[float], tolerance: float = 1e-12) -> tuple[int, int, int]:
+    wins = sum(value > tolerance for value in values)
+    losses = sum(value < -tolerance for value in values)
+    ties = len(values) - wins - losses
+    return wins, ties, losses
+
+
+def _exact_two_sided_sign_p(wins: int, losses: int) -> float | None:
+    """Exact two-sided binomial sign test after excluding ties."""
+    n = wins + losses
+    if n == 0:
+        return None
+    tail = min(wins, losses)
+    probability = 2.0 * sum(math.comb(n, k) for k in range(tail + 1)) / (2 ** n)
+    return min(1.0, probability)
+
+
+def _holm_adjust(
+    rows: list[dict[str, Any]],
+    *,
+    p_field: str,
+    adjusted_field: str,
+    family_size_field: str,
+) -> None:
+    families: dict[tuple[str, str, str], list[tuple[int, float]]] = defaultdict(list)
+    planned_family_sizes = Counter((row["phase"], row["model"], row["provider"]) for row in rows)
+    for index, row in enumerate(rows):
+        p_value = row.get(p_field)
+        if p_value is not None:
+            families[(row["phase"], row["model"], row["provider"])].append((index, float(p_value)))
+    for family, members in families.items():
+        ordered = sorted(members, key=lambda item: item[1])
+        # Keep missing/unevaluable preregistered pairwise hypotheses in the
+        # multiplicity family; treating them as absent would shrink the family
+        # after observing incomplete data.
+        family_size = planned_family_sizes[family]
+        running_max = 0.0
+        for rank, (index, p_value) in enumerate(ordered):
+            adjusted = min(1.0, (family_size - rank) * p_value)
+            running_max = max(running_max, adjusted)
+            rows[index][adjusted_field] = running_max
+            rows[index][family_size_field] = family_size
+    for row in rows:
+        row.setdefault(adjusted_field, None)
+        row.setdefault(
+            family_size_field,
+            planned_family_sizes[(row["phase"], row["model"], row["provider"])],
+        )
+
+
+def _paired_outcomes(records: list[dict[str, Any]]) -> dict[tuple[str, str, str, int | None, str, str], float]:
+    grouped: dict[tuple[str, str, str, int | None, str, str], list[float]] = defaultdict(list)
+    for record in records:
+        if record.get("normalized_improvement") is None:
+            continue
+        key = (
             str(record.get("phase") or "unassigned"),
             str(record.get("model")),
             str(record.get("provider")),
             record.get("trial"),
             str(record.get("task")),
             str(record.get("agent")),
-        ): float(record["normalized_improvement"])
-        for record in records
-        if record.get("normalized_improvement") is not None
+        )
+        grouped[key].append(float(record["normalized_improvement"]))
+    # A duplicate run cell is ambiguous, so it must make the paired block
+    # incomplete instead of being silently overwritten or averaged.
+    return {key: values[0] for key, values in grouped.items() if len(values) == 1}
+
+
+def audit_experiment_cells(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    required = ("phase", "trial", "agent", "task", "model", "provider")
+    issues: list[dict[str, Any]] = []
+    grouped: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
+    for index, record in enumerate(records):
+        missing = [field for field in required if record.get(field) is None]
+        if missing:
+            issues.append(
+                {
+                    "issue": "missing_cell_metadata",
+                    "phase": record.get("phase"),
+                    "trial": record.get("trial"),
+                    "agent": record.get("agent"),
+                    "task": record.get("task"),
+                    "model": record.get("model"),
+                    "provider": record.get("provider"),
+                    "record_count": 1,
+                    "detail": "missing fields: " + ",".join(missing),
+                    "source_paths": record.get("summary_path"),
+                    "record_index": index,
+                }
+            )
+            continue
+        grouped[tuple(record[field] for field in required)].append(record)
+    for key, members in sorted(grouped.items(), key=lambda item: str(item[0])):
+        if len(members) <= 1:
+            continue
+        issues.append(
+            {
+                "issue": "duplicate_agent_task_seed_cell",
+                "phase": key[0],
+                "trial": key[1],
+                "agent": key[2],
+                "task": key[3],
+                "model": key[4],
+                "provider": key[5],
+                "record_count": len(members),
+                "detail": "duplicate cells are excluded from paired analysis, never averaged or overwritten",
+                "source_paths": ";".join(str(member.get("summary_path") or "") for member in members),
+                "record_index": None,
+            }
+        )
+    return issues
+
+
+def _pair_blocks(
+    values: dict[tuple[str, str, str, int | None, str, str], float],
+    context: tuple[str, str, str],
+    left: str,
+    right: str,
+) -> tuple[dict[int | None, dict[str, float]], dict[int | None, dict[str, float]]]:
+    phase, model, provider = context
+    candidate_trials = {
+        key[3]
+        for key in values
+        if key[:3] == context and key[5] in {left, right}
     }
+    matched: dict[int | None, dict[str, float]] = defaultdict(dict)
+    for trial in candidate_trials:
+        matched[trial] = {}
+    for key, left_value in values.items():
+        if key[:3] != context or key[5] != left:
+            continue
+        _, _, _, trial, task, _ = key
+        right_key = (phase, model, provider, trial, task, right)
+        if right_key in values:
+            matched[trial][task] = left_value - values[right_key]
+    expected = _EXPECTED_TASKS_BY_PHASE.get(phase)
+    complete = {
+        trial: differences
+        for trial, differences in matched.items()
+        if differences and (expected is None or len(differences) == expected)
+    }
+    return dict(matched), complete
+
+
+def paired_agent_comparisons(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    values = _paired_outcomes(records)
     contexts = sorted({key[:3] for key in values})
     rows = []
     for phase, model, provider in contexts:
         agents = sorted({key[5] for key in values if key[:3] == (phase, model, provider)})
         for left_index, left in enumerate(agents):
             for right in agents[left_index + 1:]:
-                trial_differences: dict[int | None, list[float]] = defaultdict(list)
-                keys = [key for key in values if key[:3] == (phase, model, provider) and key[5] == left]
-                for key in keys:
-                    _, _, _, trial, task, _ = key
-                    right_key = (phase, model, provider, trial, task, right)
-                    if right_key in values:
-                        trial_differences[trial].append(values[key] - values[right_key])
-                expected = _EXPECTED_TASKS_BY_PHASE.get(phase)
-                complete_trial_means = [
-                    statistics.fmean(differences)
-                    for differences in trial_differences.values()
-                    if differences and (expected is None or len(differences) == expected)
+                matched, complete = _pair_blocks(values, (phase, model, provider), left, right)
+                complete_trial_means = [statistics.fmean(differences.values()) for differences in complete.values()]
+                primary = _paired_summary(complete_trial_means)
+                seed_wins, seed_ties, seed_losses = _sign_counts(complete_trial_means)
+                cell_differences = [difference for block in complete.values() for difference in block.values()]
+                cell_wins, cell_ties, cell_losses = _sign_counts(cell_differences)
+                tasks = sorted({task for block in complete.values() for task in block})
+                task_means = [
+                    statistics.fmean(block[task] for block in complete.values() if task in block)
+                    for task in tasks
                 ]
-                if not complete_trial_means:
-                    continue
-                n = len(complete_trial_means)
-                mean = statistics.fmean(complete_trial_means)
-                sd = statistics.stdev(complete_trial_means) if n >= 2 else None
-                ci = _t95(n - 1) * sd / math.sqrt(n) if sd is not None else None
+                task_wins, task_ties, task_losses = _sign_counts(task_means)
                 rows.append(
                     {
                         "phase": phase,
@@ -446,13 +598,163 @@ def paired_agent_comparisons(records: list[dict[str, Any]]) -> list[dict[str, An
                         "provider": provider,
                         "agent_left": left,
                         "agent_right": right,
-                        "complete_paired_trial_n": n,
-                        "mean_difference_left_minus_right": mean,
-                        "sd_across_paired_trial_means": sd,
-                        "ci95_halfwidth_student_t": ci,
-                        "interpretation": "positive favors agent_left; interval is descriptive and unadjusted for multiplicity",
+                        "analysis_class": "confirmatory" if phase.startswith("confirmatory") else "diagnostic",
+                        "expected_trial_n": _EXPECTED_TRIALS_BY_PHASE.get(phase),
+                        "expected_task_n_per_trial": _EXPECTED_TASKS_BY_PHASE.get(phase),
+                        "observed_matched_trial_n": len(matched),
+                        "complete_paired_trial_n": primary["n"],
+                        "excluded_incomplete_paired_trial_n": len(matched) - len(complete),
+                        "complete_block_gate_passed": (
+                            primary["n"] == _EXPECTED_TRIALS_BY_PHASE[phase]
+                            if phase in _EXPECTED_TRIALS_BY_PHASE else primary["n"] > 0
+                        ),
+                        "mean_difference_left_minus_right": primary["mean"],
+                        "median_difference_left_minus_right": primary["median"],
+                        "sd_across_paired_trial_means": primary["sd"],
+                        "ci95_halfwidth_student_t": primary["ci_halfwidth"],
+                        "ci95_low": primary["ci_low"],
+                        "ci95_high": primary["ci_high"],
+                        "cohen_dz": primary["cohen_dz"],
+                        "seed_block_wins_left": seed_wins,
+                        "seed_block_ties": seed_ties,
+                        "seed_block_losses_left": seed_losses,
+                        "seed_block_win_rate_excluding_ties": seed_wins / (seed_wins + seed_losses) if seed_wins + seed_losses else None,
+                        "exact_sign_p_seed_blocks": _exact_two_sided_sign_p(seed_wins, seed_losses),
+                        "task_n": len(tasks),
+                        "task_wins_left": task_wins,
+                        "task_ties": task_ties,
+                        "task_losses_left": task_losses,
+                        "task_win_rate_excluding_ties": task_wins / (task_wins + task_losses) if task_wins + task_losses else None,
+                        "exact_sign_p_task_means_descriptive": _exact_two_sided_sign_p(task_wins, task_losses),
+                        "matched_task_trial_cell_n": len(cell_differences),
+                        "cell_wins_left": cell_wins,
+                        "cell_ties": cell_ties,
+                        "cell_losses_left": cell_losses,
+                        "cell_win_rate_excluding_ties": cell_wins / (cell_wins + cell_losses) if cell_wins + cell_losses else None,
+                        "interpretation": "positive favors agent_left; seed-block statistics are primary, while task and task-seed win rates are fixed-suite descriptive diagnostics",
                     }
                 )
+    _holm_adjust(
+        rows,
+        p_field="exact_sign_p_seed_blocks",
+        adjusted_field="holm_p_seed_blocks",
+        family_size_field="holm_seed_family_size",
+    )
+    _holm_adjust(
+        rows,
+        p_field="exact_sign_p_task_means_descriptive",
+        adjusted_field="holm_p_task_means_descriptive",
+        family_size_field="holm_task_family_size",
+    )
+    for row in rows:
+        row["holm_seed_significant_0_05"] = (
+            row["analysis_class"] == "confirmatory"
+            and row["complete_block_gate_passed"]
+            and row["holm_p_seed_blocks"] is not None
+            and row["holm_p_seed_blocks"] < 0.05
+        )
+    return rows
+
+
+def paired_agent_task_effects(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    values = _paired_outcomes(records)
+    contexts = sorted({key[:3] for key in values})
+    rows: list[dict[str, Any]] = []
+    for phase, model, provider in contexts:
+        agents = sorted({key[5] for key in values if key[:3] == (phase, model, provider)})
+        for left_index, left in enumerate(agents):
+            for right in agents[left_index + 1:]:
+                _, complete = _pair_blocks(values, (phase, model, provider), left, right)
+                tasks = sorted({task for block in complete.values() for task in block})
+                for task in tasks:
+                    differences = [block[task] for block in complete.values() if task in block]
+                    summary = _paired_summary(differences)
+                    wins, ties, losses = _sign_counts(differences)
+                    rows.append(
+                        {
+                            "phase": phase,
+                            "model": model,
+                            "provider": provider,
+                            "agent_left": left,
+                            "agent_right": right,
+                            "task": task,
+                            "matched_seed_n": summary["n"],
+                            "mean_difference_left_minus_right": summary["mean"],
+                            "median_difference_left_minus_right": summary["median"],
+                            "sd_paired_difference": summary["sd"],
+                            "ci95_halfwidth_student_t": summary["ci_halfwidth"],
+                            "ci95_low": summary["ci_low"],
+                            "ci95_high": summary["ci_high"],
+                            "cohen_dz": summary["cohen_dz"],
+                            "seed_wins_left": wins,
+                            "seed_ties": ties,
+                            "seed_losses_left": losses,
+                            "seed_win_rate_excluding_ties": wins / (wins + losses) if wins + losses else None,
+                            "claim_boundary": "secondary fixed-task heterogeneity estimate; not an independent primary comparison",
+                        }
+                    )
+    return rows
+
+
+def collect_scorer_semantics_sensitivity(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Audit scorer-semantic differences without replacing official metrics."""
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        summary_path = Path(str(record.get("summary_path") or ""))
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        val_steps = summary.get("val_steps") or []
+        best_value = summary.get("best_val_metric")
+        successful_ids: set[int] = set()
+        matches: list[int] = []
+        for fallback_id, step in enumerate(val_steps, start=1):
+            step_id = step.get("step_id")
+            try:
+                step_id = int(step_id)
+            except (TypeError, ValueError):
+                step_id = fallback_id
+            successful = (step.get("val_result") or {}).get("success") is True and step.get("primary_metric") is not None
+            if successful:
+                successful_ids.add(step_id)
+                if best_value is not None and step.get("primary_metric") == best_value:
+                    matches.append(step_id)
+        snapshot_ids: set[int] = set()
+        for snapshot in (summary_path.parent / "step_snapshots").glob("step_*_code.json"):
+            match = re.search(r"step_(\d+)_code\.json$", snapshot.name)
+            if match:
+                snapshot_ids.add(int(match.group(1)))
+        invalid_snapshot_ids = snapshot_ids - successful_ids
+        missing_success_snapshot_ids = successful_ids - snapshot_ids
+        rows.append(
+            {
+                "phase": record.get("phase"),
+                "trial": record.get("trial"),
+                "agent": record.get("agent"),
+                "task": record.get("task"),
+                "summary_path": str(summary_path),
+                "summary_sha256": record.get("summary_sha256"),
+                "best_val_metric": best_value,
+                "official_last_matching_best_step": matches[-1] if matches else None,
+                "sensitivity_first_matching_best_step": matches[0] if matches else None,
+                "best_step_shift_last_minus_first": matches[-1] - matches[0] if matches else None,
+                "best_step_semantics_differ": len(matches) > 1 and matches[-1] != matches[0],
+                "validation_step_n": len(val_steps),
+                "successful_validation_step_n": len(successful_ids),
+                "official_persisted_snapshot_n": len(snapshot_ids),
+                "valid_only_persisted_snapshot_n": len(snapshot_ids & successful_ids),
+                "invalid_persisted_snapshot_n": len(invalid_snapshot_ids),
+                "successful_step_missing_snapshot_n": len(missing_success_snapshot_ids),
+                "exploration_membership_differs": bool(invalid_snapshot_ids or missing_success_snapshot_ids),
+                "valid_only_exploration_status": (
+                    "RECOMPUTE_GRAPHCODEBERT_SENSITIVITY"
+                    if invalid_snapshot_ids or missing_success_snapshot_ids
+                    else "MEMBERSHIP_EQUIVALENT" if snapshot_ids else "NO_SNAPSHOTS_AVAILABLE"
+                ),
+                "official_metrics_replaced": False,
+            }
+        )
     return rows
 
 
@@ -724,6 +1026,23 @@ def write_experiment_artifacts(
         records,
         ["agent", "task", "phase", "trial", "experimental_seed", "workspace_label", "harness_git_commit", "model", "provider", "baseline_primary_metric", "best_val_metric", "test_metric", "test_success", "fml_credit_metric", "fml_credit_status", "normalized_improvement", "total_steps", "total_ideas", "total_duration_seconds", "total_tokens", "summary_path", "summary_sha256"],
     )
+    integrity_issues = audit_experiment_cells(records)
+    _write_csv(
+        out_dir / "experiment_cell_integrity_issues.csv",
+        integrity_issues,
+        ["issue", "phase", "trial", "agent", "task", "model", "provider", "record_count", "detail", "source_paths", "record_index"],
+    )
+    _write_json(
+        out_dir / "experiment_cell_integrity_status.json",
+        {
+            "status": "PASS" if not integrity_issues else "FAIL_EXCLUDE_AMBIGUOUS_CELLS",
+            "record_n": len(records),
+            "issue_n": len(integrity_issues),
+            "duplicate_cell_n": sum(issue["issue"] == "duplicate_agent_task_seed_cell" for issue in integrity_issues),
+            "missing_metadata_record_n": sum(issue["issue"] == "missing_cell_metadata" for issue in integrity_issues),
+            "rule": "duplicate or incompletely identified cells cannot enter paired comparisons",
+        },
+    )
     summaries = summarize_records(records)
     _write_csv(out_dir / "experiment_group_statistics.csv", summaries, ["phase", "agent", "task", "model", "provider", "attempted_n", "successful_test_n", "n", "mean_raw_fml_credit", "mean_normalized_improvement", "sd_normalized_improvement", "ci95_halfwidth_student_t"])
     figure_path = out_dir / "figures" / "replicated_normalized_improvement.svg"
@@ -743,8 +1062,63 @@ def write_experiment_artifacts(
     _write_csv(
         out_dir / "paired_agent_comparisons.csv",
         paired_comparisons,
-        ["phase", "model", "provider", "agent_left", "agent_right", "complete_paired_trial_n", "mean_difference_left_minus_right", "sd_across_paired_trial_means", "ci95_halfwidth_student_t", "interpretation"],
+        [
+            "phase", "model", "provider", "agent_left", "agent_right", "analysis_class",
+            "expected_trial_n", "expected_task_n_per_trial", "observed_matched_trial_n",
+            "complete_paired_trial_n", "excluded_incomplete_paired_trial_n",
+            "complete_block_gate_passed", "mean_difference_left_minus_right",
+            "median_difference_left_minus_right", "sd_across_paired_trial_means",
+            "ci95_halfwidth_student_t", "ci95_low", "ci95_high", "cohen_dz",
+            "seed_block_wins_left", "seed_block_ties", "seed_block_losses_left",
+            "seed_block_win_rate_excluding_ties", "exact_sign_p_seed_blocks",
+            "holm_p_seed_blocks", "holm_seed_family_size", "holm_seed_significant_0_05",
+            "task_n", "task_wins_left", "task_ties", "task_losses_left",
+            "task_win_rate_excluding_ties", "exact_sign_p_task_means_descriptive",
+            "holm_p_task_means_descriptive", "holm_task_family_size",
+            "matched_task_trial_cell_n", "cell_wins_left", "cell_ties", "cell_losses_left",
+            "cell_win_rate_excluding_ties", "interpretation",
+        ],
     )
+    task_effects = paired_agent_task_effects(records)
+    _write_csv(
+        out_dir / "paired_agent_task_effects.csv",
+        task_effects,
+        [
+            "phase", "model", "provider", "agent_left", "agent_right", "task",
+            "matched_seed_n", "mean_difference_left_minus_right",
+            "median_difference_left_minus_right", "sd_paired_difference",
+            "ci95_halfwidth_student_t", "ci95_low", "ci95_high", "cohen_dz",
+            "seed_wins_left", "seed_ties", "seed_losses_left",
+            "seed_win_rate_excluding_ties", "claim_boundary",
+        ],
+    )
+    sensitivity_rows = collect_scorer_semantics_sensitivity(records)
+    _write_csv(
+        out_dir / "scorer_semantics_sensitivity.csv",
+        sensitivity_rows,
+        [
+            "phase", "trial", "agent", "task", "summary_path", "summary_sha256",
+            "best_val_metric", "official_last_matching_best_step",
+            "sensitivity_first_matching_best_step", "best_step_shift_last_minus_first",
+            "best_step_semantics_differ", "validation_step_n", "successful_validation_step_n",
+            "official_persisted_snapshot_n", "valid_only_persisted_snapshot_n",
+            "invalid_persisted_snapshot_n", "successful_step_missing_snapshot_n",
+            "exploration_membership_differs", "valid_only_exploration_status",
+            "official_metrics_replaced",
+        ],
+    )
+    sensitivity_status = {
+        "schema_version": "fml-scientist-scorer-sensitivity-v1",
+        "status": "REAL_RECORD_AUDIT" if sensitivity_rows else "NO_REAL_RECORDS",
+        "run_n": len(sensitivity_rows),
+        "first_vs_last_best_step_difference_n": sum(row["best_step_semantics_differ"] for row in sensitivity_rows),
+        "exploration_membership_difference_n": sum(row["exploration_membership_differs"] for row in sensitivity_rows),
+        "official_scorer_frozen": True,
+        "official_metrics_replaced": False,
+        "best_step_sensitivity": "first successful exact match is reported beside, never instead of, the official last successful exact match",
+        "exploration_sensitivity": "membership differences are audited now; GraphCodeBERT metrics require separately named recomputation when real snapshots exist",
+    }
+    _write_json(out_dir / "scorer_semantics_sensitivity_status.json", sensitivity_status)
     overall_figure_path = out_dir / "figures" / "agent_overall_normalized_improvement.svg"
     overall_figure_emitted = _agent_overall_chart(overall_statistics, overall_figure_path)
     process_records = collect_process_metric_records(metric_reports_root, records, catalog)
@@ -765,20 +1139,25 @@ def write_experiment_artifacts(
         if _process_metric_chart(metric, process_summaries, path):
             process_figures.append(str(path))
     status = {
-        "schema_version": "fml-scientist-experiment-dataset-v1",
+        "schema_version": "fml-scientist-experiment-dataset-v2",
         "results_root": str(results_root),
         "record_count": len(records),
+        "experiment_cell_integrity_issue_count": len(integrity_issues),
         "group_count": len(summaries),
         "replicated_group_count": sum(row["n"] >= 2 for row in summaries),
         "complete_agent_trial_block_count": sum(row["complete_task_block"] for row in trial_aggregates),
         "overall_agent_group_count": len(overall_statistics),
         "paired_agent_comparison_count": len(paired_comparisons),
+        "paired_agent_task_effect_count": len(task_effects),
+        "scorer_sensitivity_run_count": len(sensitivity_rows),
+        "best_step_semantics_difference_count": sensitivity_status["first_vs_last_best_step_difference_n"],
+        "exploration_membership_difference_count": sensitivity_status["exploration_membership_difference_n"],
         "process_metric_record_count": len(process_records),
         "process_metric_group_count": len(process_summaries),
         "process_metric_figure_count": len(process_figures),
         "experimental_figures_emitted": figure_emitted or overall_figure_emitted or bool(process_figures),
         "figures": ([str(figure_path)] if figure_emitted else []) + ([str(overall_figure_path)] if overall_figure_emitted else []) + process_figures,
-        "reason": "No synthetic performance figures are emitted; figures require real replicated records and catalog-grounded FML normalization." if not (figure_emitted or overall_figure_emitted or process_figures) else "Real replicated records were normalized with the checked-in FML contracts; overall estimates use complete task blocks, intervals use Student-t critical values, and process metrics retain separate axes.",
+        "reason": "No synthetic performance figures are emitted; figures require real replicated records and catalog-grounded FML normalization." if not (figure_emitted or overall_figure_emitted or process_figures) else "Real replicated records were normalized with the checked-in FML contracts; primary pairwise estimates use matched complete seed blocks with Student-t intervals, effect sizes, exact sign tests, and Holm adjustment; task heterogeneity and scorer sensitivities remain separately labeled.",
     }
     _write_json(out_dir / "experiment_dataset_status.json", status)
     return status

@@ -23,7 +23,15 @@ from ml_scientist.published_prior import (
     task_card_rows,
     write_published_prior,
 )
-from ml_scientist.reporting import paired_agent_comparisons, summarize_agent_performance, write_catalog_artifacts, write_experiment_artifacts
+from ml_scientist.reporting import (
+    collect_scorer_semantics_sensitivity,
+    paired_agent_comparisons,
+    paired_agent_task_effects,
+    summarize_agent_performance,
+    write_catalog_artifacts,
+    write_experiment_artifacts,
+)
+from ml_scientist.statistical_analysis import build_statistical_analysis_protocol
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -103,7 +111,15 @@ class PlannerTests(unittest.TestCase):
         triage = nodes["review-amendment-triage"]
         self.assertIn("code-modification", triage["metadata"]["amendment_targets"])
         self.assertIn("visible-validation", triage["metadata"]["amendment_targets"])
+        self.assertIn("confirmatory-analysis", triage["metadata"]["amendment_targets"])
         self.assertIn("new hidden evaluation", triage["metadata"]["protected_test_rule"])
+
+    def test_confirmatory_analysis_unlocks_final_evidence_not_search(self):
+        nodes = {node["node_id"]: node for node in self.plan["nodes"]}
+        analysis = nodes["confirmatory-analysis"]
+        self.assertEqual(analysis["depends_on"], ["protected-final-test"])
+        self.assertIn("holm_pairwise_adjustment", analysis["unlock_conditions"])
+        self.assertEqual(nodes["final-evidence-bundle"]["depends_on"], ["confirmatory-analysis"])
 
     def test_publication_has_two_integrity_gates_and_rereview(self):
         nodes = {node["node_id"]: node for node in self.plan["nodes"]}
@@ -189,6 +205,50 @@ class ReportingTests(unittest.TestCase):
         pairs = paired_agent_comparisons(records)
         self.assertEqual(len(pairs), 1)
         self.assertAlmostEqual(pairs[0]["mean_difference_left_minus_right"], 0.1)
+        self.assertEqual(pairs[0]["complete_paired_trial_n"], 3)
+        self.assertEqual(pairs[0]["seed_block_wins_left"], 3)
+        self.assertEqual(pairs[0]["exact_sign_p_seed_blocks"], 0.25)
+        self.assertEqual(pairs[0]["holm_p_seed_blocks"], 0.25)
+        self.assertIsNone(pairs[0]["cohen_dz"])
+        task_effects = paired_agent_task_effects(records)
+        self.assertEqual(len(task_effects), 2)
+        self.assertTrue(all(row["matched_seed_n"] == 3 for row in task_effects))
+        duplicated = records + [dict(records[0])]
+        duplicate_pairs = paired_agent_comparisons(duplicated)
+        self.assertEqual(duplicate_pairs[0]["complete_paired_trial_n"], 2)
+        self.assertEqual(duplicate_pairs[0]["excluded_incomplete_paired_trial_n"], 1)
+
+    def test_scorer_sensitivity_keeps_official_and_corrected_semantics_separate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp) / "run"
+            snapshots = run / "step_snapshots"
+            snapshots.mkdir(parents=True)
+            payload = {
+                "best_val_metric": 0.8,
+                "val_steps": [
+                    {"step_id": 1, "primary_metric": 0.8, "val_result": {"success": True}},
+                    {"step_id": 2, "primary_metric": None, "val_result": {"success": False}},
+                    {"step_id": 3, "primary_metric": 0.8, "val_result": {"success": True}},
+                ],
+            }
+            summary_path = run / "summary.json"
+            summary_path.write_text(json.dumps(payload), encoding="utf-8")
+            for step in (1, 2, 3):
+                (snapshots / f"step_{step:04d}_code.json").write_text("{}", encoding="utf-8")
+            rows = collect_scorer_semantics_sensitivity(
+                [{"phase": "confirmatory_lite", "trial": 1, "agent": "a", "task": "t", "summary_path": str(summary_path), "summary_sha256": "hash"}]
+            )
+            self.assertEqual(rows[0]["official_last_matching_best_step"], 3)
+            self.assertEqual(rows[0]["sensitivity_first_matching_best_step"], 1)
+            self.assertEqual(rows[0]["invalid_persisted_snapshot_n"], 1)
+            self.assertEqual(rows[0]["valid_only_exploration_status"], "RECOMPUTE_GRAPHCODEBERT_SENSITIVITY")
+            self.assertFalse(rows[0]["official_metrics_replaced"])
+
+    def test_statistical_protocol_blocks_pseudoreplication_and_unadjusted_claims(self):
+        protocol = build_statistical_analysis_protocol()
+        self.assertIn("matched seed trial", protocol["estimand"]["primary_uncertainty_unit"])
+        self.assertIn("Holm", protocol["primary_analysis"]["multiplicity"])
+        self.assertFalse(protocol["sensitivity_analyses"][0]["replacement_allowed"])
 
 
 class PublishedPriorTests(unittest.TestCase):
@@ -328,6 +388,8 @@ class ExperimentDesignTests(unittest.TestCase):
         pilot_tasks = {row["task"] for row in rows if row["phase"] == "pilot"}
         self.assertEqual(pilot_tasks, {"Privacy_privacymeter", "Generalization_domainbed"})
         self.assertIn("anti_cherry_pick_rule", protocol["pilot_selection_basis"])
+        self.assertIn("matched seed block", protocol["analysis_policy"]["primary_uncertainty_unit"])
+        self.assertIn("Holm", protocol["analysis_policy"]["multiplicity"])
 
     def test_preflight_reports_key_presence_without_key_value(self):
         report = preflight_environment(self.catalog, provider="OpenAI", model="SET_MODEL", repo=ROOT)
@@ -344,6 +406,8 @@ class ExperimentDesignTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_experiment_protocol(self.catalog, root / "template")
+            self.assertTrue((root / "template" / "statistical_analysis_protocol.json").is_file())
+            self.assertTrue((root / "template" / "statistical_analysis_protocol.md").is_file())
             with self.assertRaises(CampaignError):
                 load_run_matrix(root / "template" / "run_matrix.csv")
             write_experiment_protocol(self.catalog, root / "frozen", model="fixed-model")

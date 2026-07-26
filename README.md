@@ -312,8 +312,9 @@ provider) stays the same.
 This fork's `self-evolving-ml-scientist` branch adds an auditable control plane
 that catalogs every FML agent/task/metric, plans a unified experiment-to-paper
 DAG, freezes a balanced replicated experiment protocol, records real result
-provenance and statistical figures, and evolves four skill channels only after
-downstream evidence passes promotion gates.
+provenance and statistical figures, performs matched seed-block comparisons with
+task-heterogeneity and scorer-sensitivity audits, and evolves four skill channels
+only after downstream evidence passes promotion gates.
 
 ```bash
 python3 -m ml_scientist.cli bootstrap \
@@ -357,6 +358,13 @@ every task dossier records its full prompt, editable-file boundary, commands,
 native and auxiliary metrics, raw baseline hashes, and published aggregate
 context. Its status file still reports zero new experiment records until the
 controlled campaign actually runs.
+
+The frozen statistical contract treats one complete matched seed block—not each
+task row—as the primary uncertainty unit. It reports paired intervals, Cohen dz,
+exact sign tests, Holm-adjusted pairwise comparisons, fixed-suite task
+heterogeneity, and separately named first-achieved/valid-only scorer sensitivity
+diagnostics. With only three planned confirmatory seeds, estimates and intervals
+lead the paper; non-significance is never presented as equivalence.
 
 
 ## Repository layout

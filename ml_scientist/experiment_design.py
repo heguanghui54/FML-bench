@@ -16,6 +16,8 @@ import shutil
 from pathlib import Path
 from typing import Any, Iterable
 
+from .statistical_analysis import write_statistical_analysis_protocol
+
 
 PROVIDER_KEYS = {
     "OpenAI": "OPENAI_API_KEY",
@@ -236,12 +238,15 @@ def build_experiment_protocol(
             "hardware_must_be_reported": ["host", "CPU", "GPU", "VRAM", "driver", "CUDA", "OS"],
         },
         "analysis_policy": {
-            "unit": "one independent agent-task trial",
+            "experimental_run_unit": "one agent-task-seed run",
+            "primary_uncertainty_unit": "one matched seed block after equally averaging every preregistered task",
             "primary_phase": "confirmatory_lite",
             "pilot_excluded_from_primary_claims": True,
             "missing_or_failed_test_credit": "use FML scorer fallback policy; report failure counts separately",
-            "uncertainty": "sample SD and two-sided 95% Student-t interval when n >= 2",
-            "multiplicity": "report all task-level estimates; label unadjusted exploratory comparisons",
+            "uncertainty": "paired seed-block mean difference, sample SD, two-sided 95% Student-t interval, and Cohen dz when defined",
+            "multiplicity": "Holm family-wise correction across all unordered agent pairs within each phase/model/provider family",
+            "task_heterogeneity": "report per-task paired effects and task/task-seed win-tie-loss rates as secondary descriptive analyses",
+            "small_n_warning": "three seeds have weak inferential resolution; lead with estimates and intervals and do not infer equivalence from a non-significant result",
             "selection": "no arm, task, metric, or trial removal after protected-test exposure",
         },
         "pilot_selection_basis": {
@@ -380,4 +385,5 @@ def write_experiment_protocol(
     path = out_dir / "run_commands.sh"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(commands) + "\n", encoding="utf-8")
+    write_statistical_analysis_protocol(out_dir)
     return protocol

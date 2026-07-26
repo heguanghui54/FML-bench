@@ -127,8 +127,15 @@ their scorer CSVs into a long provenance table, replicated statistics, and one
 separate uncertainty plot per metric so incompatible units are never combined
 on a single axis. Overall agent estimates first average all tasks within each
 complete trial block and then compute uncertainty across trial means; incomplete
-blocks are surfaced and excluded. Pairwise agent tables use matched task-trial
-differences and are explicitly marked descriptive and unadjusted for multiplicity.
+blocks are surfaced and excluded. Pairwise agent tables use the same matched
+complete seed blocks as the primary uncertainty unit and report the mean and
+median paired difference, Student-t interval, Cohen dz, seed-block win/tie/loss
+counts, an exact sign test, and Holm family-wise correction across all agent
+pairs. A separate task-effect table exposes heterogeneity and task/task-seed
+win rates, but labels those repeated-measure views descriptive rather than
+pretending every cell is an independent replication. The generated statistical
+analysis contract warns that three seeds have weak inferential resolution and
+that a non-significant comparison is not evidence of equivalence.
 
 ## Published prior versus new campaign evidence
 
@@ -147,8 +154,12 @@ The source audit additionally freezes a metric-implementation report. It makes
 the Unlearning raw/display direction explicit and records two current
 paper-versus-scorer differences: exploration uses every persisted step snapshot,
 and best-improvement step uses the last exact match. New experiments retain the
-official checked-in scorer and may add separately named sensitivity analyses;
-they never change metric semantics after the campaign begins.
+official checked-in scorer. The report writes a separate scorer-sensitivity
+table containing the first-achieved-best step and valid-only snapshot membership
+diagnostics beside the official last-match/all-snapshot definitions. GraphCodeBERT
+exploration values are recomputed only under an explicitly named sensitivity
+analysis when real snapshots exist; official metrics are never replaced and
+metric semantics never change after the campaign begins.
 
 For each task, the Stage-3 method-frontier node receives a non-claim prior:
 dense-opportunity tasks start with a greedy/adaptive hypothesis, while
