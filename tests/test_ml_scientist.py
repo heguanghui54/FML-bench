@@ -15,6 +15,7 @@ from ml_scientist.published_prior import (
     agent_summary_rows,
     agent_task_rows,
     process_rows,
+    published_guidance_for_task,
     task_card_rows,
     write_published_prior,
 )
@@ -82,6 +83,13 @@ class PlannerTests(unittest.TestCase):
             set(nodes["skill-evolution"]["metadata"]["skill_channels"]),
             {"research_execution", "research_review", "paper_writing", "paper_review"},
         )
+
+    def test_published_prior_guides_planning_without_unlocking_claims(self):
+        nodes = {node["node_id"]: node for node in self.plan["nodes"]}
+        guidance = nodes["method-frontier"]["metadata"]["published_prior_guidance"]
+        self.assertEqual(guidance["task_id"], self.catalog["tasks"][0]["task_id"])
+        self.assertFalse(guidance["claim_unlock_eligible"])
+        self.assertIn("published and local evidence classes are not merged", nodes["paper-peer-review"]["metadata"]["published_prior_checks"])
 
     def test_review_can_trigger_versioned_upstream_amendments(self):
         nodes = {node["node_id"]: node for node in self.plan["nodes"]}
@@ -201,6 +209,14 @@ class PublishedPriorTests(unittest.TestCase):
             self.assertTrue((root / "published_evaluation_contract.json").is_file())
             self.assertTrue((root / "paper_version_lineage.csv").is_file())
             self.assertTrue((root / "provenance_manifest.json").is_file())
+
+    def test_post_hoc_guidance_changes_search_mode_but_cannot_unlock_claims(self):
+        dense = published_guidance_for_task("Unlearning_open_unlearning")
+        sparse = published_guidance_for_task("Data_Efficiency_easyfsl")
+        self.assertEqual(dense["strategy_hypothesis"]["initial_mode"], "greedy_exploitation")
+        self.assertEqual(sparse["strategy_hypothesis"]["initial_mode"], "multi_branch_exploration")
+        self.assertFalse(dense["claim_unlock_eligible"])
+        self.assertIn("autoresearch", sparse["strategy_hypothesis"]["required_counterfactual_operators"])
 
 
 class ExperimentDesignTests(unittest.TestCase):

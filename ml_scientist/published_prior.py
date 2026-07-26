@@ -239,6 +239,47 @@ def task_card_rows() -> list[dict[str, Any]]:
     return rows
 
 
+def published_guidance_for_task(task_id: str) -> dict[str, Any]:
+    """Return hypothesis guidance without granting empirical claim credit."""
+    try:
+        card = next(row for row in task_card_rows() if row["task_id"] == task_id)
+    except StopIteration as exc:
+        raise KeyError(f"No published FML task card for {task_id}") from exc
+    dense = card["partition"] == "DENSE-OPP"
+    if dense:
+        strategy = {
+            "initial_mode": "greedy_exploitation",
+            "primary_operators": ["autoresearch", "adaptivesearch"],
+            "required_counterfactual_operators": ["ai_scientist_v2", "openevolve"],
+            "reason": "The published post-hoc partition found frequent gains per unit code-space distance.",
+        }
+    else:
+        strategy = {
+            "initial_mode": "multi_branch_exploration",
+            "primary_operators": ["adaptivesearch", "ai_scientist_v2", "openevolve"],
+            "required_counterfactual_operators": ["autoresearch"],
+            "reason": "The published post-hoc partition found sparse gains; preserve multiple frontiers before exploitation.",
+        }
+    return {
+        "evidence_class": PAPER["evidence_class"],
+        "source": PAPER["arxiv_id"] + PAPER["version"],
+        "source_locator": "Table 5, Section 4.3, and Appendix G",
+        "task_id": task_id,
+        "published_baseline_method": card["baseline_method"],
+        "published_native_metric": card["native_metric"],
+        "published_opportunity_density": card["opportunity_density"],
+        "published_partition": card["partition"],
+        "strategy_hypothesis": strategy,
+        "review_requirements": [
+            "treat the opportunity partition as post-hoc",
+            "include the counterfactual search family under a matched budget",
+            "do not use this prior to unlock a result claim",
+            "replace this guidance when local frozen validation evidence contradicts it",
+        ],
+        "claim_unlock_eligible": False,
+    }
+
+
 def _agent_summary_figure(rows: list[dict[str, Any]], path: Path) -> None:
     width, height = 1120, 450
     left, top, panel_w, row_h = 145, 62, 365, 45

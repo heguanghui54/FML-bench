@@ -133,3 +133,10 @@ never loaded by the new-experiment reporter, never fills missing trials, and
 never unlocks a paper result claim. The opportunity-density split is labeled
 post-hoc, and the pooled process correlations retain warnings about unadjusted
 p-values, dependence among cells, and AUC/final-score definitional overlap.
+
+For each task, the Stage-3 method-frontier node receives a non-claim prior:
+dense-opportunity tasks start with a greedy/adaptive hypothesis, while
+sparse-opportunity tasks start with multi-branch exploration. A matched-budget
+counterfactual search family is always required, local frozen evidence may
+override the prior, and peer review verifies that published and local evidence
+classes never merge.

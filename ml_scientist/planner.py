@@ -6,6 +6,7 @@ from collections import defaultdict, deque
 from typing import Any
 
 from .contracts import InnerLoopContract, NodeStatus, PipelinePlan, ResearchNode
+from .published_prior import published_guidance_for_task
 
 
 STAGES = [
@@ -101,10 +102,11 @@ def build_research_paper_plan(
     task: dict[str, Any], agents: list[dict[str, Any]]
 ) -> dict[str, Any]:
     task_id = task["task_id"]
+    prior_guidance = published_guidance_for_task(task_id)
     nodes = [
         _node("memory-snapshot", "Freeze memory and skill snapshot", "governance", [], ["memory_snapshot.json"], ["versioned", "retrieval_boundary_frozen"]),
         _node("research-contract", "Freeze research and paper claim contracts", "contract", ["memory-snapshot"], ["research_contract.json", "claim_contract.json"], ["task_metric_frozen", "budgets_frozen", "test_boundary_frozen"]),
-        _node("method-frontier", "Learn and select baseline-agent search operators", "method_search", ["research-contract"], ["method_frontier.json"], ["all_agent_cards_loaded"], agent_ids=[agent["agent_id"] for agent in agents]),
+        _node("method-frontier", "Learn and select baseline-agent search operators", "method_search", ["research-contract"], ["method_frontier.json"], ["all_agent_cards_loaded", "published_prior_labeled_nonclaim_evidence"], agent_ids=[agent["agent_id"] for agent in agents], published_prior_guidance=prior_guidance),
         _node("baseline-reproduction", "Reproduce the task baseline", "baseline_reproduction", ["research-contract"], ["baseline_reproduction.json"], ["baseline_metric_matches_contract"], baseline_validation=task["baseline_validation"]),
         _node("paper-outline", "Prepare provisional paper outline", "paper_outline", ["research-contract"], ["paper_outline.md"], ["provisional_no_results_claims"], provisional=True),
         _node("paper-methods", "Prepare provisional method and system description", "paper_methods", ["method-frontier"], ["methods_skeleton.md"], ["provisional_no_results_claims"], provisional=True),
@@ -119,7 +121,7 @@ def build_research_paper_plan(
         _node("final-evidence-bundle", "Integrate frozen paper evidence", "governance", ["protected-final-test"], ["paper_evidence_bundle.json"], ["claim_evidence_graph_complete", "supersession_chain_valid"]),
         _node("final-paper-writing", "Write evidence-grounded final paper", "paper_writing", ["paper-outline", "paper-methods", "final-evidence-bundle"], ["manuscript.tex", "claim_evidence_map.json"], ["all_research_dependencies_pass", "all_numbers_traceable", "no_stale_evidence"]),
         _node("paper-integrity", "Run blocking pre-review integrity and AI-failure audit", "paper_integrity", ["final-paper-writing"], ["pre_review_integrity_report.json", "ai_failure_mode_audit.json"], ["zero_untraceable_numbers", "zero_known_fabrications", "failure_modes_cleared_or_human_acknowledged"], mandatory_checkpoint=True),
-        _node("paper-peer-review", "Run full multi-role peer review", "paper_peer_review", ["paper-integrity"], ["editorial_decision.json", "review_reports.json", "revision_roadmap.json"], ["all_review_issues_accounted"], reviewer_roles=["editor_in_chief", "methodology", "statistics", "reproducibility", "devils_advocate"], mandatory_checkpoint=True),
+        _node("paper-peer-review", "Run full multi-role peer review", "paper_peer_review", ["paper-integrity"], ["editorial_decision.json", "review_reports.json", "revision_roadmap.json"], ["all_review_issues_accounted"], reviewer_roles=["editor_in_chief", "methodology", "statistics", "reproducibility", "devils_advocate"], published_prior_checks=["published and local evidence classes are not merged", "opportunity partition is labeled post-hoc", "pooled process p-values are not treated as multiplicity-corrected", "AUC overlap with final performance is disclosed"], mandatory_checkpoint=True),
         _node("review-amendment-triage", "Trace every review issue to writing or upstream evidence", "paper_integrity", ["paper-peer-review"], ["review_issue_trace.json", "versioned_amendment_plan.json"], ["every_issue_has_owner", "upstream_defects_create_new_graph_version"], amendment_targets=["code-modification", "visible-validation", "replication", "ablation", "process-evaluation"], protected_test_rule="post-exposure empirical changes require a new hidden evaluation"),
         _node("paper-revision", "Revise manuscript and answer every review issue", "paper_writing", ["review-amendment-triage"], ["revised_manuscript.tex", "response_to_reviewers.md"], ["all_review_items_addressed_or_explained", "evidence_versions_current"], mandatory_checkpoint=True),
         _node("paper-re-review", "Verify revision responses and residual issues", "paper_peer_review", ["paper-revision"], ["rereview_report.json", "residual_issue_matrix.json"], ["revision_claims_verified", "residual_issues_classified"], mandatory_checkpoint=True),
