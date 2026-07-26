@@ -333,7 +333,7 @@ skill-governance commands.
 The bootstrap records the current paper's aggregate baseline results in a
 separate evidence class. It includes 108 six-agent/task mean-and-SD cells, the
 seven-agent aggregate comparison, all twelve pooled process correlations,
-eighteen task/baseline/opportunity cards, search-strategy cards, and four SVG
+eighteen task/baseline/opportunity cards, search-strategy cards, and six SVG
 charts:
 
 ```bash
@@ -350,6 +350,13 @@ FML deliberately excludes paper writing and review from its controlled agent
 scores. The bootstrap therefore creates a separate `paper_evaluation/` protocol
 with blocking claim/provenance gates and blinded multi-role manuscript review;
 paper-quality scores are never averaged with FML performance or process metrics.
+
+The generated `knowledge_base/` goes below the summary catalog: every agent
+dossier resolves its search loop to exact source symbols and parameters, and
+every task dossier records its full prompt, editable-file boundary, commands,
+native and auxiliary metrics, raw baseline hashes, and published aggregate
+context. Its status file still reports zero new experiment records until the
+controlled campaign actually runs.
 
 
 ## Repository layout

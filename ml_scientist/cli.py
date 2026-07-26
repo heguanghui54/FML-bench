@@ -11,6 +11,7 @@ from .campaign import run_campaign
 from .experiment_design import preflight_environment, write_experiment_protocol
 from .governance import initialize_governance_artifacts
 from .handbook import write_handbook, write_provisional_paper
+from .knowledge_base import write_knowledge_base
 from .planner import build_research_paper_plan
 from .paper_evaluation import write_paper_evaluation_protocol
 from .published_prior import write_published_prior
@@ -51,6 +52,8 @@ def parse_args() -> argparse.Namespace:
     published.add_argument("--out", type=Path, required=True)
     paper_eval = sub.add_parser("paper-evaluation", help="Write the manuscript-quality evaluation protocol")
     paper_eval.add_argument("--out", type=Path, required=True)
+    knowledge = sub.add_parser("knowledge-base", help="Write source-grounded agent and task dossiers")
+    knowledge.add_argument("--out", type=Path, required=True)
     campaign = sub.add_parser("campaign", help="Execute or dry-run a frozen, resumable run matrix")
     campaign.add_argument("--matrix", type=Path, required=True)
     campaign.add_argument("--logs", type=Path, required=True)
@@ -100,6 +103,8 @@ def main() -> None:
         write_published_prior(args.out)
     elif args.command == "paper-evaluation":
         write_paper_evaluation_protocol(args.out)
+    elif args.command == "knowledge-base":
+        write_knowledge_base(repo, catalog, args.out)
     elif args.command == "campaign":
         state = run_campaign(
             matrix_path=args.matrix,
@@ -113,6 +118,7 @@ def main() -> None:
     else:
         write_catalog_artifacts(catalog, args.out / "catalog")
         write_handbook(catalog, args.out / "knowledge")
+        write_knowledge_base(repo, catalog, args.out / "knowledge_base")
         write_published_prior(args.out / "published_prior")
         write_paper_evaluation_protocol(args.out / "paper_evaluation")
         write_provisional_paper(catalog, args.out / "paper")

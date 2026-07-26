@@ -104,18 +104,18 @@ AGENT_PROFILES: dict[str, dict[str, Any]] = {
 
 
 PROCESS_METRICS = [
-    ("Exploration Spread", "exploration", "Mean L2 dispersion of valid step embeddings around their centroid."),
-    ("Exploration Uniqueness", "exploration", "Fraction of distinct agglomerative code-embedding clusters."),
-    ("Exploration Reach", "exploration", "Maximum L2 distance from the baseline-code embedding."),
-    ("Effective dim", "exploration", "Participation-ratio dimensionality of the centered embedding cloud."),
-    ("Val-test |gap|", "generalization", "Absolute gap between normalized validation and protected-test improvement."),
-    ("Valid step ratio", "reliability", "Successful validation executions divided by all attempted steps."),
-    ("AUC-over-steps", "efficiency", "Area under the best-so-far normalized-improvement curve."),
-    ("First-improvement step", "efficiency", "First step that improves over the task baseline."),
-    ("Late-gain fraction", "efficiency", "Fraction of total improvement obtained after half the step budget."),
-    ("Best-improvement step", "efficiency", "Last step matching the best validation metric."),
-    ("Token cost (M)", "cost", "Total model tokens in millions."),
-    ("Wall-clock time (h)", "cost", "End-to-end agent runtime in hours."),
+    ("Exploration Spread", "exploration", "Mean L2 distance of every persisted step-snapshot embedding from their float32 centroid."),
+    ("Exploration Uniqueness", "exploration", "Agglomerative cosine-cluster count divided by all persisted snapshots; average linkage, threshold 0.015, with zero-norm snapshots assigned one extra cluster."),
+    ("Exploration Reach", "exploration", "Maximum float64 L2 distance from a persisted step snapshot to the baseline-code embedding."),
+    ("Effective dim", "exploration", "Participation ratio of singular-value-derived covariance eigenvalues over all persisted step snapshots."),
+    ("Val-test |gap|", "generalization", "Absolute difference between FML-normalized best-validation and protected-test improvements."),
+    ("Valid step ratio", "reliability", "Validation results marked success divided by summary total_steps."),
+    ("AUC-over-steps", "efficiency", "Arithmetic mean of the best-so-far normalized-improvement curve over every recorded validation step; failed steps carry the incumbent forward."),
+    ("First-improvement step", "efficiency", "First 1-based curve position with normalized improvement greater than 1e-15."),
+    ("Late-gain fraction", "efficiency", "Share of final best-so-far improvement gained after floor(K/2) recorded validation steps; undefined with negligible total gain."),
+    ("Best-improvement step", "efficiency", "Last successful recorded step whose raw primary metric exactly equals summary best_val_metric."),
+    ("Token cost (M)", "cost", "Summary total_tokens divided by one million."),
+    ("Wall-clock time (h)", "cost", "Summary total_duration_seconds divided by 3600."),
 ]
 
 

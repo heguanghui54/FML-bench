@@ -10,11 +10,14 @@ from ml_scientist.catalog import build_catalog, load_simple_yaml
 from ml_scientist.campaign import CampaignError, load_run_matrix, run_campaign
 from ml_scientist.experiment_design import build_experiment_protocol, preflight_environment, write_experiment_protocol
 from ml_scientist.governance import EvidenceGateError, EvidenceGatedSkillRegistry, initialize_governance_artifacts
+from ml_scientist.knowledge_base import build_agent_dossiers, build_metric_implementation_audit, build_task_dossiers, write_knowledge_base
 from ml_scientist.planner import build_research_paper_plan, validate_plan
 from ml_scientist.paper_evaluation import build_paper_evaluation_protocol, write_paper_evaluation_protocol
 from ml_scientist.published_prior import (
     agent_summary_rows,
     agent_task_rows,
+    derived_agent_dispersion_rows,
+    derived_task_discrimination_rows,
     process_rows,
     published_guidance_for_task,
     task_card_rows,
@@ -37,6 +40,9 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(self.catalog["counts"]["lite_tasks"], 8)
         self.assertEqual(self.catalog["counts"]["process_metrics"], 12)
         self.assertEqual(len(self.catalog["metrics"]), 30)
+        metrics = {row["name"]: row for row in self.catalog["metrics"] if row["category"] != "task_performance"}
+        self.assertIn("every persisted step-snapshot", metrics["Exploration Spread"]["definition"])
+        self.assertIn("Last successful recorded step", metrics["Best-improvement step"]["definition"])
 
     def test_agent_profiles_are_source_grounded(self):
         for agent in self.catalog["agents"]:
@@ -192,12 +198,18 @@ class PublishedPriorTests(unittest.TestCase):
         self.assertEqual(len(agent_summary_rows()), 7)
         self.assertEqual(len(process_rows()), 12)
         self.assertEqual(len(task_card_rows()), 18)
+        self.assertEqual(len(derived_agent_dispersion_rows()), 6)
+        self.assertEqual(len(derived_task_discrimination_rows()), 18)
         adaptive = next(row for row in agent_summary_rows() if row["agent_id"] == "adaptivesearch")
         self.assertEqual(adaptive["mean_normalized_test_improvement"], 0.208)
         self.assertEqual(adaptive["pairwise_win_rate_percent"], 58.6)
         auc = next(row for row in process_rows() if row["metric"] == "AUC-over-steps")
         self.assertEqual(auc["pooled_spearman_rho"], 0.784)
         self.assertTrue(auc["significant_unadjusted_p_lt_0_05"])
+        autoresearch = next(row for row in derived_agent_dispersion_rows() if row["agent_id"] == "autoresearch")
+        self.assertAlmostEqual(autoresearch["sample_sd_across_task_means"], 0.243, places=3)
+        most_discriminating = max(derived_task_discrimination_rows(), key=lambda row: row["range_across_agents"])
+        self.assertEqual(most_discriminating["paper_task"], "PrivacyMeter")
         self.assertEqual({row["task_id"] for row in task_card_rows()}, {task["task_id"] for task in catalog["tasks"]})
 
     def test_published_prior_is_labeled_and_separated_from_new_evidence(self):
@@ -208,8 +220,13 @@ class PublishedPriorTests(unittest.TestCase):
             self.assertFalse(manifest["separation_contract"]["merge_with_new_experiment_rows"])
             self.assertEqual(manifest["row_counts"]["agent_task"], 108)
             self.assertTrue((root / "figures" / "published_agent_task_heatmap.svg").is_file())
+            self.assertTrue((root / "figures" / "derived_agent_mean_vs_cross_task_sd.svg").is_file())
+            self.assertTrue((root / "figures" / "derived_task_strategy_discrimination.svg").is_file())
             self.assertTrue((root / "published_evaluation_contract.json").is_file())
             self.assertTrue((root / "paper_version_lineage.csv").is_file())
+            synthesis = (root / "paper_ready_prior_evidence_brief.md").read_text(encoding="utf-8")
+            self.assertIn("Claims that remain locked", synthesis)
+            self.assertIn("Do not call these differences statistically significant", synthesis)
             self.assertTrue((root / "provenance_manifest.json").is_file())
 
     def test_post_hoc_guidance_changes_search_mode_but_cannot_unlock_claims(self):
@@ -242,6 +259,58 @@ class PaperEvaluationTests(unittest.TestCase):
             self.assertTrue((root / "paper_review_score_template.csv").is_file())
 
 
+class KnowledgeBaseTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.catalog = build_catalog(ROOT)
+
+    def test_all_agent_dossiers_resolve_audited_control_flow(self):
+        dossiers = build_agent_dossiers(ROOT, self.catalog)
+        self.assertEqual(len(dossiers), 7)
+        self.assertEqual({row["agent_id"] for row in dossiers}, {row["agent_id"] for row in self.catalog["agents"]})
+        for dossier in dossiers:
+            self.assertTrue(dossier["control_flow_symbols"], dossier["agent_id"])
+            self.assertTrue(all(symbol["line_start"] > 0 for symbol in dossier["control_flow_symbols"]))
+            self.assertTrue(all(len(module["sha256"]) == 64 for module in dossier["source_modules"]))
+            self.assertTrue(dossier["known_failure_modes_to_test"])
+
+    def test_all_task_dossiers_capture_metrics_baselines_and_boundaries(self):
+        dossiers = build_task_dossiers(ROOT, self.catalog)
+        self.assertEqual(len(dossiers), 18)
+        for dossier in dossiers:
+            metric = dossier["metric_contract"]
+            self.assertIsNotNone(metric["baseline_validation_raw"], dossier["task_id"])
+            self.assertIsNotNone(metric["baseline_test_raw"], dossier["task_id"])
+            self.assertTrue(metric["all_declared_metric_directions"], dossier["task_id"])
+            self.assertTrue(dossier["execution"]["editable_target_files"])
+            self.assertEqual(len(dossier["published_agent_results"]), 6)
+        unlearning = next(row for row in dossiers if row["task_id"] == "Unlearning_open_unlearning")["metric_contract"]
+        self.assertEqual(unlearning["raw_native_direction"], "higher")
+        self.assertEqual(unlearning["fml_display_direction"], "lower")
+        self.assertEqual(unlearning["fml_display_transform"], "-log10(raw forget_quality)")
+        self.assertAlmostEqual(unlearning["baseline_test_display"], 166.8, places=1)
+        self.assertAlmostEqual(unlearning["normalization"]["worst"], 166.8, places=1)
+
+    def test_knowledge_base_reports_pending_real_evidence_honestly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            status = write_knowledge_base(ROOT, self.catalog, Path(tmp))
+            self.assertEqual(status["agent_dossier_n"], 7)
+            self.assertEqual(status["task_dossier_n"], 18)
+            self.assertTrue(status["all_agent_control_symbols_resolved"])
+            self.assertTrue(status["all_task_baselines_present"])
+            self.assertEqual(status["real_new_experiment_record_n"], 0)
+            audit = json.loads((Path(tmp) / "objective_completion_audit.json").read_text(encoding="utf-8"))
+            self.assertEqual(audit["overall_status"], "PARTIAL_REAL_EXPERIMENTS_AND_MANUSCRIPT_EVALUATION_PENDING")
+            self.assertEqual([row["status"] for row in audit["requirements"]].count("NOT_YET_PROVEN"), 2)
+
+    def test_metric_audit_exposes_paper_scorer_semantic_differences(self):
+        audit = build_metric_implementation_audit(ROOT, self.catalog)
+        findings = {row["finding_id"]: row for row in audit["semantic_findings"]}
+        self.assertEqual(findings["EXPLORATION_VALID_STEP_SCOPE"]["status"], "PAPER_SCORER_SEMANTIC_DIFFERENCE")
+        self.assertEqual(findings["BEST_IMPROVEMENT_FIRST_VS_LAST"]["status"], "PAPER_SCORER_SEMANTIC_DIFFERENCE")
+        self.assertIn("Do not change metric semantics", audit["study_rule"])
+
+
 class ExperimentDesignTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -256,6 +325,9 @@ class ExperimentDesignTests(unittest.TestCase):
         self.assertEqual(len({(row["agent"], row["task"], row["trial"]) for row in confirmatory}), 168)
         self.assertTrue(all("--seed" in row["command"] for row in rows))
         self.assertTrue(all(f"trial_{row['trial']:02d}" in row["result_root"] for row in rows))
+        pilot_tasks = {row["task"] for row in rows if row["phase"] == "pilot"}
+        self.assertEqual(pilot_tasks, {"Privacy_privacymeter", "Generalization_domainbed"})
+        self.assertIn("anti_cherry_pick_rule", protocol["pilot_selection_basis"])
 
     def test_preflight_reports_key_presence_without_key_value(self):
         report = preflight_environment(self.catalog, provider="OpenAI", model="SET_MODEL", repo=ROOT)

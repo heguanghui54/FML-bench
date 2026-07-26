@@ -11,6 +11,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import statistics
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -239,6 +240,56 @@ def task_card_rows() -> list[dict[str, Any]]:
     return rows
 
 
+def derived_agent_dispersion_rows() -> list[dict[str, Any]]:
+    rows = []
+    for agent_index, (agent_id, label) in enumerate(AGENTS):
+        values = [cells[agent_index][0] for cells in TABLE2.values()]
+        rows.append(
+            {
+                "evidence_class": PAPER["evidence_class"],
+                "paper": PAPER["arxiv_id"] + PAPER["version"],
+                "derived_from": "Table 2 rounded per-task means",
+                "agent_id": agent_id,
+                "paper_agent": label,
+                "task_n": len(values),
+                "mean_across_task_means": statistics.fmean(values),
+                "sample_sd_across_task_means": statistics.stdev(values),
+                "minimum_task_mean": min(values),
+                "maximum_task_mean": max(values),
+                "interpretation": "task heterogeneity, not uncertainty across rounds",
+            }
+        )
+    return rows
+
+
+def derived_task_discrimination_rows() -> list[dict[str, Any]]:
+    cards = {row["paper_task"]: row for row in task_card_rows()}
+    rows = []
+    for task, cells in TABLE2.items():
+        values = [cell[0] for cell in cells]
+        best = max(values)
+        winners = [AGENTS[index][1] for index, value in enumerate(values) if value == best]
+        rows.append(
+            {
+                "evidence_class": PAPER["evidence_class"],
+                "paper": PAPER["arxiv_id"] + PAPER["version"],
+                "derived_from": "Table 2 rounded six-agent means and Table 5 opportunity density",
+                "task_id": TASK_IDS[task],
+                "paper_task": task,
+                "agent_n": len(values),
+                "mean_across_agents": statistics.fmean(values),
+                "sample_sd_across_agents": statistics.stdev(values),
+                "range_across_agents": max(values) - min(values),
+                "highest_mean_agent": ";".join(winners),
+                "highest_mean": best,
+                "opportunity_density_published_post_hoc": cards[task]["opportunity_density"],
+                "partition_published_post_hoc": cards[task]["partition"],
+                "interpretation": "descriptive strategy discrimination based on rounded published means",
+            }
+        )
+    return rows
+
+
 def published_guidance_for_task(task_id: str) -> dict[str, Any]:
     """Return hypothesis guidance without granting empirical claim credit."""
     try:
@@ -371,8 +422,156 @@ def _opportunity_figure(rows: list[dict[str, Any]], path: Path) -> None:
     _save_svg(path, "\n".join(body), width, height, "Published opportunity density", "Post-hoc opportunity density for eighteen FML tasks and the published median split.")
 
 
+def _agent_dispersion_figure(rows: list[dict[str, Any]], path: Path) -> None:
+    width, height = 820, 560
+    left, top, plot_w, plot_h = 105, 58, 620, 410
+    x_max, y_max = .22, .26
+    body = ['<text x="24" y="28" class="title">Published mean performance versus cross-task variability</text>']
+    body.append(f'<line x1="{left}" y1="{top+plot_h}" x2="{left+plot_w}" y2="{top+plot_h}" class="axis"/>')
+    body.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top+plot_h}" class="axis"/>')
+    for tick in (0, .05, .10, .15, .20):
+        x = left + tick / x_max * plot_w
+        body.append(f'<line x1="{x}" y1="{top}" x2="{x}" y2="{top+plot_h}" class="grid"/>')
+        body.append(f'<text x="{x}" y="{top+plot_h+18}" text-anchor="middle" class="small">{tick:.2f}</text>')
+    for tick in (0, .05, .10, .15, .20, .25):
+        y = top + plot_h - tick / y_max * plot_h
+        body.append(f'<line x1="{left}" y1="{y}" x2="{left+plot_w}" y2="{y}" class="grid"/>')
+        body.append(f'<text x="{left-9}" y="{y+4}" text-anchor="end" class="small">{tick:.2f}</text>')
+    for index, row in enumerate(rows):
+        mean = float(row["mean_across_task_means"])
+        sd = float(row["sample_sd_across_task_means"])
+        x = left + mean / x_max * plot_w
+        y = top + plot_h - sd / y_max * plot_h
+        color = ("#0072B2", "#E69F00", "#009E73", "#D55E00", "#CC79A7", "#56B4E9")[index]
+        label_dx, label_dy = {
+            "TAS v2": (10, 18),
+            "AutoR": (10, -10),
+        }.get(row["paper_agent"], (10, -7))
+        body.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="8" fill="{color}"/>')
+        body.append(f'<text x="{x+label_dx:.1f}" y="{y+label_dy:.1f}" class="label">{_escape(row["paper_agent"])}</text>')
+    body.append(f'<text x="{left+plot_w/2}" y="{height-52}" text-anchor="middle" class="label">Mean normalized improvement across 18 task means</text>')
+    body.append(f'<text x="22" y="{top+plot_h/2}" transform="rotate(-90 22 {top+plot_h/2})" text-anchor="middle" class="label">Sample SD across task means</text>')
+    body.append('<text x="24" y="538" class="small">Derived from rounded Table 2 means. Vertical variation is task heterogeneity, not a confidence interval.</text>')
+    _save_svg(path, "\n".join(body), width, height, "Agent performance and task heterogeneity", "Mean published agent improvement plotted against sample standard deviation across eighteen task means.")
+
+
+def _task_discrimination_figure(rows: list[dict[str, Any]], path: Path) -> None:
+    ordered = sorted(rows, key=lambda row: float(row["range_across_agents"]), reverse=True)
+    width, height = 1000, 690
+    left, top, plot_w, row_h = 190, 52, 650, 32
+    maximum = max(float(row["range_across_agents"]) for row in ordered)
+    body = ['<text x="24" y="28" class="title">Published task discrimination among six search strategies</text>']
+    for index, row in enumerate(ordered):
+        y = top + index * row_h
+        value = float(row["range_across_agents"])
+        bar = value / maximum * plot_w
+        color = "#009E73" if row["partition_published_post_hoc"] == "DENSE-OPP" else "#56B4E9"
+        body.append(f'<text x="{left-8}" y="{y+19}" text-anchor="end" class="label">{_escape(row["paper_task"])}</text>')
+        body.append(f'<rect x="{left}" y="{y+3}" width="{bar:.1f}" height="21" fill="{color}"/>')
+        body.append(f'<text x="{left+bar+7:.1f}" y="{y+19}" class="small">range {value:.3f}; best {_escape(row["highest_mean_agent"])}</text>')
+    body.append('<text x="24" y="666" class="small">Range of rounded three-round means; descriptive only. Green=dense and blue=sparse under the published post-hoc partition.</text>')
+    _save_svg(path, "\n".join(body), width, height, "Task discrimination among strategies", "Across-agent range of published mean normalized improvement for each FML task.")
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _write_paper_synthesis(
+    path: Path,
+    agent_summary: list[dict[str, Any]],
+    processes: list[dict[str, Any]],
+    task_discrimination: list[dict[str, Any]],
+) -> None:
+    significant = [row for row in processes if row["significant_unadjusted_p_lt_0_05"]]
+    discriminating = sorted(task_discrimination, key=lambda row: float(row["range_across_agents"]), reverse=True)[:6]
+    lines = [
+        "# Paper-Ready FML Prior Evidence Brief",
+        "",
+        "Status: descriptive synthesis of published aggregate evidence, not a manuscript result from the new campaign.",
+        "",
+        f"Primary source: [{PAPER['title']}]({PAPER['abstract_url']}), `{PAPER['arxiv_id']}{PAPER['version']}`.",
+        "",
+        "## What may be claimed from the published study",
+        "",
+        "The controlled comparison isolates search strategy by sharing code editing, execution, metric presentation, and validation/test separation. Six main agents were evaluated on eighteen tasks for three rounds and 100 validation steps per run; AdaptiveSearch was subsequently reported as a seventh strategy. These facts provide prior context and hypotheses, not evidence that the present pipeline is superior.",
+        "",
+        "| Agent | Published mean normalized improvement | Published pairwise win rate |",
+        "| --- | ---: | ---: |",
+    ]
+    for row in agent_summary:
+        lines.append(f"| {row['paper_agent']} | {float(row['mean_normalized_test_improvement']):.3f} | {float(row['pairwise_win_rate_percent']):.1f}% |")
+    lines.extend(
+        [
+            "",
+            "Safe interpretation: AdaptiveSearch has the highest reported aggregate values in Table 3; TAS v2 and AutoResearch are nearly tied in mean improvement. Do not call these differences statistically significant from the aggregate table alone.",
+            "",
+            "## Published process associations",
+            "",
+            "The following four pooled Spearman correlations have unadjusted `p < 0.05` in the paper:",
+            "",
+            "| Process metric | rho | Unadjusted p | Required qualification |",
+            "| --- | ---: | ---: | --- |",
+        ]
+    )
+    for row in significant:
+        p = float(row["p_value_unadjusted"])
+        p_label = f"{p:.2g}" if p >= .001 else f"{p:.1e}"
+        qualification = "partly overlaps with final improvement" if row["metric"] == "AUC-over-steps" else "pooled cells; dependence and multiplicity remain"
+        lines.append(f"| {row['metric']} | {float(row['pooled_spearman_rho']):+.3f} | {p_label} | {qualification} |")
+    lines.extend(
+        [
+            "",
+            "Use association language only. The pooled correlations do not establish that changing a process metric will causally improve final performance.",
+            "",
+            "## Checked-in scorer fidelity notes",
+            "",
+            "The source-level audit must accompany any reproduced result. The current scorer embeds every persisted step snapshot for exploration metrics, whereas the paper describes valid-step embeddings. It also reports the last successful exact match to `best_val_metric`, whereas the paper describes the step where the peak was first achieved. The campaign freezes the checked-in implementation for official comparability and may report valid-only/first-achieved variants only as separately named sensitivity analyses.",
+            "",
+            "## Tasks most useful for diagnosing strategy differences",
+            "",
+            "This ranking is derived from the across-agent range of rounded Table 2 means. It is descriptive and should guide diagnostic pilots, not determine the confirmatory task set after outcomes are known.",
+            "",
+            "| Task | Across-agent range | Highest published mean | Post-hoc regime |",
+            "| --- | ---: | --- | --- |",
+        ]
+    )
+    for row in discriminating:
+        lines.append(f"| {row['paper_task']} | {float(row['range_across_agents']):.3f} | {row['highest_mean_agent']} ({float(row['highest_mean']):.3f}) | {row['partition_published_post_hoc']} |")
+    lines.extend(
+        [
+            "",
+            "## Questions to preregister for the new campaign",
+            "",
+            "1. Under the same model, step budget, task version, and independent seeds, does AdaptiveSearch improve mean FML-Lite normalized improvement over fixed greedy, tree, MCTS, and evolutionary search?",
+            "2. Do published dense/sparse opportunity labels predict the direction of paired strategy differences on new independent runs? This is a confirmatory test of a published post-hoc hypothesis, not reuse of the original evidence.",
+            "3. Do evidence-gated memory and node-local review improve early AUC, valid-step ratio, and final normalized improvement without increasing protected-test leakage or invalid executions?",
+            "4. Given the same frozen empirical evidence, does the full writing/review/amendment pipeline improve blinded paper-quality scores and hard-gate pass rates over one-shot writing?",
+            "",
+            "## Minimum result package for the new paper",
+            "",
+            "- Native task metrics, normalized improvement, failures, and constraints for every planned run.",
+            "- Per-task/per-trial rows before aggregate tables; no removal after protected-test exposure.",
+            "- Complete task blocks within each trial, paired agent comparisons, uncertainty, and multiplicity labels.",
+            "- All twelve process metrics with separate units and figures.",
+            "- Search-regime, memory, review-loop, and paper-writing ablations under matched budgets.",
+            "- Claim-to-evidence hashes, code/task/model versions, seeds, hardware, costs, and negative results.",
+            "",
+            "## Figure captions ready for adaptation",
+            "",
+            "- `published_agent_summary.svg`: Published aggregate normalized improvement and pairwise win rate for seven FML search strategies. Values are prior evidence from Table 3 and are not new campaign measurements.",
+            "- `published_agent_task_heatmap.svg`: Three-round mean normalized test improvement for six main agents on eighteen tasks. Cell-level standard deviations remain in the companion CSV.",
+            "- `published_process_correlations.svg`: Pooled Spearman associations between twelve process metrics and final improvement. Highlighting denotes unadjusted significance and does not imply causality.",
+            "- `published_opportunity_density.svg`: Published post-hoc task opportunity density and median split; the classification is hypothesis-generating.",
+            "- `derived_agent_mean_vs_cross_task_sd.svg`: Aggregate performance versus sample standard deviation across task means; the vertical axis measures task heterogeneity, not round-level uncertainty.",
+            "- `derived_task_strategy_discrimination.svg`: Across-agent range of rounded task means, used only to choose diagnostic pilot coverage before new outcomes are observed.",
+            "",
+            "## Claims that remain locked",
+            "",
+            "No statement about the new pipeline's experimental superiority, generalization, cost effectiveness, paper quality, or skill evolution is permitted until the corresponding frozen local campaign and blinded paper-evaluation artifacts exist.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def write_published_prior(out_dir: Path) -> dict[str, Any]:
@@ -382,6 +581,8 @@ def write_published_prior(out_dir: Path) -> dict[str, Any]:
     agent_summary = agent_summary_rows()
     processes = process_rows()
     task_cards = task_card_rows()
+    agent_dispersion = derived_agent_dispersion_rows()
+    task_discrimination = derived_task_discrimination_rows()
     search_rows = [
         {
             "evidence_class": PAPER["evidence_class"],
@@ -400,6 +601,8 @@ def write_published_prior(out_dir: Path) -> dict[str, Any]:
     _write_csv(out_dir / "published_process_metrics.csv", processes, list(processes[0]))
     _write_csv(out_dir / "published_task_cards.csv", task_cards, list(task_cards[0]))
     _write_csv(out_dir / "published_search_strategies.csv", search_rows, list(search_rows[0]))
+    _write_csv(out_dir / "derived_agent_cross_task_dispersion.csv", agent_dispersion, list(agent_dispersion[0]))
+    _write_csv(out_dir / "derived_task_strategy_discrimination.csv", task_discrimination, list(task_discrimination[0]))
     _write_csv(
         out_dir / "paper_version_lineage.csv",
         [
@@ -458,6 +661,9 @@ def write_published_prior(out_dir: Path) -> dict[str, Any]:
     _heatmap(agent_task, figures / "published_agent_task_heatmap.svg")
     _process_correlation_figure(processes, figures / "published_process_correlations.svg")
     _opportunity_figure(task_cards, figures / "published_opportunity_density.svg")
+    _agent_dispersion_figure(agent_dispersion, figures / "derived_agent_mean_vs_cross_task_sd.svg")
+    _task_discrimination_figure(task_discrimination, figures / "derived_task_strategy_discrimination.svg")
+    _write_paper_synthesis(out_dir / "paper_ready_prior_evidence_brief.md", agent_summary, processes, task_discrimination)
 
     notes = out_dir / "README.md"
     notes.write_text(
@@ -520,6 +726,8 @@ def write_published_prior(out_dir: Path) -> dict[str, Any]:
             "task_cards": len(task_cards),
             "search_strategies": len(search_rows),
             "paper_versions": 2,
+            "derived_agent_dispersion": len(agent_dispersion),
+            "derived_task_discrimination": len(task_discrimination),
         },
         "artifacts": [
             {"path": str(path.relative_to(out_dir)), "sha256": _sha256(path), "bytes": path.stat().st_size}

@@ -24,7 +24,10 @@ PROVIDER_KEYS = {
     "OpenRouter": "OPENROUTER_API_KEY",
 }
 
-PILOT_TASKS = ("Fairness_fairlearn", "Causality_gcastle")
+# Diagnostic-only pilot: one published dense-opportunity/lower-is-better task
+# and one sparse-opportunity/higher-is-better task. Both are in FML-Lite and
+# have relatively high across-agent discrimination in the published aggregates.
+PILOT_TASKS = ("Privacy_privacymeter", "Generalization_domainbed")
 DEFAULT_TRIAL_SEEDS = (1103, 2207, 3301)
 
 
@@ -240,6 +243,12 @@ def build_experiment_protocol(
             "uncertainty": "sample SD and two-sided 95% Student-t interval when n >= 2",
             "multiplicity": "report all task-level estimates; label unadjusted exploratory comparisons",
             "selection": "no arm, task, metric, or trial removal after protected-test exposure",
+        },
+        "pilot_selection_basis": {
+            "status": "published-prior-informed diagnostic selection; ineligible for primary claims",
+            "tasks": list(PILOT_TASKS),
+            "coverage": ["dense and sparse published post-hoc opportunity regimes", "lower- and higher-is-better native metrics", "tasks included in the frozen FML-Lite confirmatory suite"],
+            "anti_cherry_pick_rule": "pilot outcomes cannot add, remove, or replace confirmatory agents, tasks, metrics, or trials",
         },
         "test_boundary": catalog["evaluation_boundary"],
         "phase_run_counts": counts,

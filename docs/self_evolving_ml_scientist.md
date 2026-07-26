@@ -53,9 +53,12 @@ This writes:
 - an experiment-data status file that refuses to invent performance charts
   when no real `summary.json` records exist.
 - a baseline/evaluation handbook and source-hashed provenance catalog;
+- source-grounded JSON and Markdown dossiers for every agent and task, including
+  audited control-method line numbers, effective parameters, failure hypotheses,
+  prompts, commands, target-file boundaries, auxiliary metrics, and baseline hashes;
 - a strictly separated `published_prior/` evidence layer transcribing the
   current paper's 108 agent-task aggregate cells, seven-agent summary, twelve
-  process correlations, eighteen task cards, and four statistical SVG charts;
+  process correlations, eighteen task cards, and six statistical SVG charts;
 - a provisional paper outline, methods section, and locked claim registry;
 - a separate manuscript-quality protocol with six blocking integrity gates,
   seven weighted review criteria, five blinded reviewer roles, and matched
@@ -136,6 +139,16 @@ never loaded by the new-experiment reporter, never fills missing trials, and
 never unlocks a paper result claim. The opportunity-density split is labeled
 post-hoc, and the pooled process correlations retain warnings about unadjusted
 p-values, dependence among cells, and AUC/final-score definitional overlap.
+It also produces a paper-ready prior-evidence brief with admissible wording,
+locked claims, diagnostic task rankings, preregistered questions, result-package
+requirements, and captions for every published/derived chart.
+
+The source audit additionally freezes a metric-implementation report. It makes
+the Unlearning raw/display direction explicit and records two current
+paper-versus-scorer differences: exploration uses every persisted step snapshot,
+and best-improvement step uses the last exact match. New experiments retain the
+official checked-in scorer and may add separately named sensitivity analyses;
+they never change metric semantics after the campaign begins.
 
 For each task, the Stage-3 method-frontier node receives a non-claim prior:
 dense-opportunity tasks start with a greedy/adaptive hypothesis, while
