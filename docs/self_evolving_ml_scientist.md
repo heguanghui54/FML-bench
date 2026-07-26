@@ -53,6 +53,9 @@ This writes:
 - an experiment-data status file that refuses to invent performance charts
   when no real `summary.json` records exist.
 - a baseline/evaluation handbook and source-hashed provenance catalog;
+- a strictly separated `published_prior/` evidence layer transcribing the
+  current paper's 108 agent-task aggregate cells, seven-agent summary, twelve
+  process correlations, eighteen task cards, and four statistical SVG charts;
 - a provisional paper outline, methods section, and locked claim registry;
 - a preregistered pilot plus balanced 7-agent x 8-task x 3-trial FML-Lite
   confirmatory matrix, with every independent trial stored in a separate result
@@ -120,3 +123,13 @@ on a single axis. Overall agent estimates first average all tasks within each
 complete trial block and then compute uncertainty across trial means; incomplete
 blocks are surfaced and excluded. Pairwise agent tables use matched task-trial
 differences and are explicitly marked descriptive and unadjusted for multiplicity.
+
+## Published prior versus new campaign evidence
+
+`python3 -m ml_scientist.cli published-prior --out DIR` writes aggregate data
+from arXiv:2605.17373v2 with table-level source locators and file hashes. This
+layer can guide Stage-3 hypotheses and Stage-5 review expectations, but it is
+never loaded by the new-experiment reporter, never fills missing trials, and
+never unlocks a paper result claim. The opportunity-density split is labeled
+post-hoc, and the pooled process correlations retain warnings about unadjusted
+p-values, dependence among cells, and AUC/final-score definitional overlap.

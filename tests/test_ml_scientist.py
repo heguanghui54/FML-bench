@@ -11,6 +11,13 @@ from ml_scientist.campaign import CampaignError, load_run_matrix, run_campaign
 from ml_scientist.experiment_design import build_experiment_protocol, preflight_environment, write_experiment_protocol
 from ml_scientist.governance import EvidenceGateError, EvidenceGatedSkillRegistry, initialize_governance_artifacts
 from ml_scientist.planner import build_research_paper_plan, validate_plan
+from ml_scientist.published_prior import (
+    agent_summary_rows,
+    agent_task_rows,
+    process_rows,
+    task_card_rows,
+    write_published_prior,
+)
 from ml_scientist.reporting import paired_agent_comparisons, summarize_agent_performance, write_catalog_artifacts, write_experiment_artifacts
 
 
@@ -166,6 +173,34 @@ class ReportingTests(unittest.TestCase):
         pairs = paired_agent_comparisons(records)
         self.assertEqual(len(pairs), 1)
         self.assertAlmostEqual(pairs[0]["mean_difference_left_minus_right"], 0.1)
+
+
+class PublishedPriorTests(unittest.TestCase):
+    def test_complete_published_tables_are_transcribed(self):
+        catalog = build_catalog(ROOT)
+        self.assertEqual(len(agent_task_rows()), 18 * 6)
+        self.assertEqual(len(agent_summary_rows()), 7)
+        self.assertEqual(len(process_rows()), 12)
+        self.assertEqual(len(task_card_rows()), 18)
+        adaptive = next(row for row in agent_summary_rows() if row["agent_id"] == "adaptivesearch")
+        self.assertEqual(adaptive["mean_normalized_test_improvement"], 0.208)
+        self.assertEqual(adaptive["pairwise_win_rate_percent"], 58.6)
+        auc = next(row for row in process_rows() if row["metric"] == "AUC-over-steps")
+        self.assertEqual(auc["pooled_spearman_rho"], 0.784)
+        self.assertTrue(auc["significant_unadjusted_p_lt_0_05"])
+        self.assertEqual({row["task_id"] for row in task_card_rows()}, {task["task_id"] for task in catalog["tasks"]})
+
+    def test_published_prior_is_labeled_and_separated_from_new_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = write_published_prior(root)
+            self.assertEqual(manifest["status"], "published_prior_only")
+            self.assertFalse(manifest["separation_contract"]["merge_with_new_experiment_rows"])
+            self.assertEqual(manifest["row_counts"]["agent_task"], 108)
+            self.assertTrue((root / "figures" / "published_agent_task_heatmap.svg").is_file())
+            self.assertTrue((root / "published_evaluation_contract.json").is_file())
+            self.assertTrue((root / "paper_version_lineage.csv").is_file())
+            self.assertTrue((root / "provenance_manifest.json").is_file())
 
 
 class ExperimentDesignTests(unittest.TestCase):

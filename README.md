@@ -33,6 +33,7 @@ description, and are asked to iteratively improve the baseline.
 - [Score a run](#score-a-run)
 - [Available agents](#available-agents)
 - [Self-evolving research-to-paper control plane](#self-evolving-research-to-paper-control-plane)
+- [Published prior evidence](#published-prior-evidence)
 - [Repository layout](#repository-layout)
 - [Citation](#citation)
 - [Acknowledgements](#acknowledgements)
@@ -327,6 +328,25 @@ the architecture, preflight, campaign, scoring, reporting, paper-review, and
 skill-governance commands.
 
 
+## Published prior evidence
+
+The bootstrap records the current paper's aggregate baseline results in a
+separate evidence class. It includes 108 six-agent/task mean-and-SD cells, the
+seven-agent aggregate comparison, all twelve pooled process correlations,
+eighteen task/baseline/opportunity cards, search-strategy cards, and four SVG
+charts:
+
+```bash
+python3 -m ml_scientist.cli published-prior \
+  --out artifacts/ml_scientist/published_prior
+```
+
+Every row names arXiv:2605.17373v2 and its source table; the manifest hashes
+all artifacts and forbids merging these published aggregates with new campaign
+trials. They can guide Stage-3 planning and Stage-5 review, but cannot unlock a
+new empirical claim or substitute for a missing experiment.
+
+
 ## Repository layout
 
 ```
@@ -337,6 +357,7 @@ agents/                   # agent implementations
 benchmark/                # benchmark runner / executor
 configs/agents/           # agent YAMLs
 configs/tasks/            # task YAMLs
+ml_scientist/             # research-to-paper planning, governance, and reports
 ml_tasks/                 # task definitions: train.py, prompts, configs
 workspace/                # populated by setup.py with task codebases
 ```

@@ -12,6 +12,7 @@ from .experiment_design import preflight_environment, write_experiment_protocol
 from .governance import initialize_governance_artifacts
 from .handbook import write_handbook, write_provisional_paper
 from .planner import build_research_paper_plan
+from .published_prior import write_published_prior
 from .reporting import write_catalog_artifacts, write_experiment_artifacts
 
 
@@ -45,6 +46,8 @@ def parse_args() -> argparse.Namespace:
     preflight.add_argument("--provider", default="OpenAI")
     governance = sub.add_parser("governance-init", help="Initialize frozen memory and evidence-gated skill registries")
     governance.add_argument("--out", type=Path, required=True)
+    published = sub.add_parser("published-prior", help="Write source-labeled published FML tables and charts")
+    published.add_argument("--out", type=Path, required=True)
     campaign = sub.add_parser("campaign", help="Execute or dry-run a frozen, resumable run matrix")
     campaign.add_argument("--matrix", type=Path, required=True)
     campaign.add_argument("--logs", type=Path, required=True)
@@ -90,6 +93,8 @@ def main() -> None:
         )
     elif args.command == "governance-init":
         initialize_governance_artifacts(catalog, args.out)
+    elif args.command == "published-prior":
+        write_published_prior(args.out)
     elif args.command == "campaign":
         state = run_campaign(
             matrix_path=args.matrix,
@@ -103,6 +108,7 @@ def main() -> None:
     else:
         write_catalog_artifacts(catalog, args.out / "catalog")
         write_handbook(catalog, args.out / "knowledge")
+        write_published_prior(args.out / "published_prior")
         write_provisional_paper(catalog, args.out / "paper")
         initialize_governance_artifacts(catalog, args.out / "governance")
         write_experiment_protocol(
