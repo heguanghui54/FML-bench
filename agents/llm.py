@@ -13,6 +13,14 @@ from google.generativeai.types import GenerationConfig
 
 MAX_NUM_TOKENS = 8192
 
+
+def experiment_seed() -> int:
+    """Return the frozen trial seed inherited from run_agent_benchmark.py."""
+    try:
+        return int(os.environ.get("FML_EXPERIMENT_SEED", "0"))
+    except ValueError:
+        return 0
+
 AVAILABLE_PROVIDERS = [
     "OpenRouter",
     "OpenAI",
@@ -129,7 +137,7 @@ def get_batch_responses_from_llm(
                 max_completion_tokens=MAX_NUM_TOKENS, # higher max tokens (8192) to avoid "Failed to extract JSON from LLM output" problem
                 n=n_responses,
                 stop=None,
-                seed=0,
+                seed=experiment_seed(),
             )
         else:
             response = client.chat.completions.create(
@@ -142,7 +150,7 @@ def get_batch_responses_from_llm(
                 max_tokens=MAX_NUM_TOKENS,
                 n=n_responses,
                 stop=None,
-                seed=0,
+                seed=experiment_seed(),
             )
         content = [r.message.content for r in response.choices]
         new_msg_history = [
@@ -282,7 +290,7 @@ def get_response_from_llm(
                 max_completion_tokens=MAX_NUM_TOKENS, # higher max tokens to avoid "Failed to extract JSON from LLM output" problem
                 n=1,
                 stop=None,
-                seed=0,
+                seed=experiment_seed(),
             )
         else:
             response = client.chat.completions.create(
@@ -295,7 +303,7 @@ def get_response_from_llm(
                 max_tokens=MAX_NUM_TOKENS,
                 n=1,
                 stop=None,
-                seed=0,
+                seed=experiment_seed(),
             )
         content = response.choices[0].message.content
         new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
@@ -310,7 +318,7 @@ def get_response_from_llm(
             temperature=1,
             max_completion_tokens=MAX_NUM_TOKENS,
             n=1,
-            seed=0,
+            seed=experiment_seed(),
         )
         content = response.choices[0].message.content
         new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
@@ -503,45 +511,25 @@ def create_client(model, provider='OpenAI'):
     elif provider == 'Google':
         print(f"Using Google Gemini (OpenAI-compatible) with model {model}.")
         return openai.OpenAI(
-            api_key=os.environ["GEMINI_API_KEY"],
+            api_key=os.environ.get("GOOGLE_API_KEY") or os.environ["GEMINI_API_KEY"],
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
         ), model
-    
-    else:
-        raise NotImplementedError(f"Provider {provider} not implemented.")
-
-    
-    if model.startswith("claude-"):
+    elif provider == 'Anthropic':
         print(f"Using Anthropic API with model {model}.")
         return anthropic.Anthropic(), model
-    elif model.startswith("bedrock") and "claude" in model:
+    elif provider == 'AnthropicBedrock':
         client_model = model.split("/")[-1]
         print(f"Using Amazon Bedrock with model {client_model}.")
         return anthropic.AnthropicBedrock(), client_model
-    elif model.startswith("vertex_ai") and "claude" in model:
+    elif provider == 'AnthropicVertex':
         client_model = model.split("/")[-1]
         print(f"Using Vertex AI with model {client_model}.")
         return anthropic.AnthropicVertex(), client_model
-    elif 'gpt' in model or "o1" in model or "o3" in model:
-        print(f"Using OpenAI API with model {model}.")
-        return openai.OpenAI(), model
-    elif model in ["deepseek-chat", "deepseek-reasoner", "deepseek-coder"]:
+    elif provider == 'DeepSeek':
         print(f"Using OpenAI API with {model}.")
         return openai.OpenAI(
             api_key=os.environ["DEEPSEEK_API_KEY"],
             base_url="https://api.deepseek.com"
         ), model
-    elif model == "llama3.1-405b":
-        print(f"Using OpenAI API with {model}.")
-        return openai.OpenAI(
-            api_key=os.environ["OPENROUTER_API_KEY"],
-            base_url="https://openrouter.ai/api/v1"
-        ), "meta-llama/llama-3.1-405b-instruct"
-    elif "gemini" in model:
-        print(f"Using OpenAI API with {model}.")
-        return openai.OpenAI(
-            api_key=os.environ["GEMINI_API_KEY"],
-            base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
-        ), model
     else:
-        raise ValueError(f"Model {model} not supported.")
+        raise NotImplementedError(f"Provider {provider} not implemented.")

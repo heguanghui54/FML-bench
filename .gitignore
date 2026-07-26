@@ -36,6 +36,7 @@ pip-log.txt
 
 # Project-specific
 /benchmark_results/
+/artifacts/ml_scientist/
 /logs/
 /tmp/
 /data/

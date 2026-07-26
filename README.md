@@ -32,6 +32,7 @@ description, and are asked to iteratively improve the baseline.
 - [Remote GPU execution (Modal)](#remote-gpu-execution-modal)
 - [Score a run](#score-a-run)
 - [Available agents](#available-agents)
+- [Self-evolving research-to-paper control plane](#self-evolving-research-to-paper-control-plane)
 - [Repository layout](#repository-layout)
 - [Citation](#citation)
 - [Acknowledgements](#acknowledgements)
@@ -303,6 +304,27 @@ Seven agents are registered in this benchmark. Each has a config in
 
 Swap `--agent-config` to switch agents — everything else (task, model,
 provider) stays the same.
+
+
+## Self-evolving research-to-paper control plane
+
+This fork's `self-evolving-ml-scientist` branch adds an auditable control plane
+that catalogs every FML agent/task/metric, plans a unified experiment-to-paper
+DAG, freezes a balanced replicated experiment protocol, records real result
+provenance and statistical figures, and evolves four skill channels only after
+downstream evidence passes promotion gates.
+
+```bash
+python3 -m ml_scientist.cli bootstrap \
+  --out artifacts/ml_scientist/bootstrap \
+  --results benchmark_results
+```
+
+The generated protocol intentionally contains `SET_MODEL` and cannot execute
+until a single provider/model is frozen. See
+[`docs/self_evolving_ml_scientist.md`](docs/self_evolving_ml_scientist.md) for
+the architecture, preflight, campaign, scoring, reporting, paper-review, and
+skill-governance commands.
 
 
 ## Repository layout

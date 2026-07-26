@@ -10,7 +10,9 @@ Usage:
 import argparse
 import json
 import os
+import random
 import signal
+import subprocess
 import sys
 import yaml
 from dataclasses import asdict
@@ -49,6 +51,8 @@ Examples:
                         help="Optional label for workspace copy. A unique ID is always appended.")
     parser.add_argument("--output-dir", type=str, default="benchmark_results",
                         help="Root directory for experiment outputs (default: benchmark_results)")
+    parser.add_argument("--seed", type=int, default=0,
+                        help="Research-controller seed recorded in summary.json (default: 0)")
     parser.add_argument("--save-code-backup", action="store_true", default=False,
                         help="Back up all git-changed files in the task repo into "
                              "execution_<ts>/code_backup/ before each validation run. "
@@ -124,6 +128,17 @@ AGENT_TYPE_MAP = {
 }
 
 
+def get_harness_git_commit() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            text=True,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
 def get_agent_config(config: Dict[str, Any]) -> AgentConfig:
     """Create AgentConfig from the loaded config dict."""
     agent_cfg = config.get("agent", {})
@@ -140,6 +155,7 @@ def get_agent_config(config: Dict[str, Any]) -> AgentConfig:
 
     runtime_params = {
         "metrics": config.get("metrics", {}),
+        "experiment": config.get("experiment", {}),
     }
 
     return AgentConfig(
@@ -176,12 +192,16 @@ def save_results(result, config: Dict[str, Any], runner: BenchmarkRunner):
             "agent": agent_cfg.agent_type.value,
             "model": agent_cfg.model,
             "provider": agent_cfg.provider,
+            "experimental_seed": (agent_cfg.runtime_params.get("experiment") or {}).get("seed"),
+            "workspace_label": runner.workspace_label,
+            "harness_git_commit": get_harness_git_commit(),
             "agent_params": agent_cfg.agent_params,
             "task_config": {
                 "metric": task_cfg.get("metric", ""),
                 "metric_direction": task_cfg.get("metric_direction", ""),
                 "conda_env": task_cfg.get("conda_env", ""),
                 "repo_dir": task_cfg.get("repo_dir", ""),
+                "pinned_commit": task_cfg.get("pinned_commit", ""),
                 "target_files": task_cfg.get("target_files", []),
             },
             "baseline_primary_metric": baseline_primary,
@@ -272,6 +292,25 @@ def print_summary(result):
 def main():
     args = parse_args()
 
+    # Freeze controller-side stochastic choices and pass the hash seed to every
+    # validation/test subprocess. Provider-side determinism is provider-specific,
+    # so repeated trials remain the statistical unit even when this seed is fixed.
+    random.seed(args.seed)
+    os.environ["PYTHONHASHSEED"] = str(args.seed)
+    os.environ["FML_EXPERIMENT_SEED"] = str(args.seed)
+    try:
+        import numpy as np
+        np.random.seed(args.seed)
+    except ImportError:
+        pass
+    try:
+        import torch
+        torch.manual_seed(args.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(args.seed)
+    except ImportError:
+        pass
+
     # Load config: merge agent config + task config
     try:
         agent_cfg = load_config(args.agent_config)
@@ -280,6 +319,7 @@ def main():
             "agent": agent_cfg.get("agent", {}),
             "benchmark": task_cfg.get("benchmark", {}),
             "metrics": task_cfg.get("metrics", {}),
+            "experiment": {"seed": args.seed},
         }
     except FileNotFoundError as e:
         print(f"Error: Configuration file not found: {e}")

@@ -67,6 +67,17 @@ TASKS = [
     "Unlearning_open_unlearning",
 ]
 
+FML_LITE_TASKS = [
+    "Continual_Learning_pycil",
+    "Data_Efficiency_usb",
+    "Generalization_domainbed",
+    "Generalization_domainbed_officehome",
+    "Robustness_openood",
+    "Privacy_opacus",
+    "Privacy_privacymeter",
+    "Robustness_and_Reliability_art",
+]
+
 UNLEARNING_TASK = "Unlearning_open_unlearning"
 
 # canonical_metric(info_json, task) = info_json[dataset]["means"][metric_key]
@@ -701,7 +712,21 @@ def main():
                         help="Where to write the CSVs + embedding cache. MUST be outside the "
                              "experiment result path (default: ./metric_reports/<agent_name> in "
                              "the current working directory).")
+    parser.add_argument("--suite", choices=("full", "lite"), default="full",
+                        help="Score all 18 tasks or the 8-task FML-bench-Lite subset.")
+    parser.add_argument("--tasks", default=None,
+                        help="Optional comma-separated task IDs; overrides --suite.")
     args = parser.parse_args()
+
+    if args.tasks:
+        selected_tasks = [task.strip() for task in args.tasks.split(",") if task.strip()]
+        unknown = sorted(set(selected_tasks) - set(TASKS))
+        if unknown:
+            sys.exit(f"ERROR: unknown task IDs in --tasks: {unknown}")
+        if not selected_tasks:
+            sys.exit("ERROR: --tasks did not contain any task IDs")
+    else:
+        selected_tasks = FML_LITE_TASKS if args.suite == "lite" else TASKS
 
     agent_root = Path(args.agent_dir).resolve()
     if not agent_root.is_dir():
@@ -725,7 +750,7 @@ def main():
 
     # Baselines (static, from ml_tasks)
     baselines = {}
-    for task in TASKS:
+    for task in selected_tasks:
         base_dir = REPO_ROOT / "ml_tasks" / task / "baseline_results"
         baselines[task] = {
             "val": canonical_metric(safe_load_json(base_dir / "val_info.json"), task),
@@ -749,7 +774,7 @@ def main():
     embed_ctx = (get_model, device, cache_dir)
 
     rows = []
-    for task in TASKS:
+    for task in selected_tasks:
         print(f"  scoring {task} ...")
         rows.append(score_task(agent_root, task, baselines, embed_ctx))
     df = pd.DataFrame(rows).set_index("task")
