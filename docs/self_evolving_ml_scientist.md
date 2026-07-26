@@ -137,6 +137,32 @@ pretending every cell is an independent replication. The generated statistical
 analysis contract warns that three seeds have weak inferential resolution and
 that a non-significant comparison is not evidence of equivalence.
 
+The report also writes `adaptive_opportunity_interactions.csv`. Within each
+matched seed and baseline, it subtracts the AdaptiveSearch advantage on the
+published sparse-opportunity tasks from its advantage on the published
+dense-opportunity tasks. The six baseline interactions receive a separate Holm
+correction. The published post-hoc partition supplies frozen hypothesis labels;
+only new campaign outcomes enter the estimator.
+
+## Evidence-locked paper package
+
+Bootstrap writes a substantive Methods manuscript, research-question brief,
+argument blueprint, claim registry, and table/figure plan. To refresh the paper
+handoff after ingesting results independently:
+
+```bash
+python3 -m ml_scientist.cli paper-package \
+  --artifact-root artifacts/ml_scientist/bootstrap \
+  --out artifacts/ml_scientist/bootstrap/paper
+```
+
+`paper_readiness.json` checks the human paper configuration, repository
+knowledge, frozen protocol, execution preflight, all 182 planned records, all 21
+complete agent comparisons, process metrics, scorer sensitivities, empirical
+claim gates, and the paper-writing ablation. Until those gates pass, the
+manuscript contains real system and protocol prose but keeps the Abstract,
+Results, empirical Discussion, and Conclusion explicitly locked.
+
 ## Published prior versus new campaign evidence
 
 `python3 -m ml_scientist.cli published-prior --out DIR` writes aggregate data
@@ -182,3 +208,23 @@ The protocol also preregisters three writing arms—one-shot, gated without peer
 revision, and the full review/amendment/re-review pipeline—with three independent
 drafts per arm and matched evidence, model, and token budget. The generated
 templates contain no scores until real manuscripts and reviews exist.
+
+After reviewers fill `review_scores.csv`, `hard_gate_results.csv`, and optional
+`issue_dispositions.csv`, reduce them without modifying any manuscript:
+
+```bash
+python3 -m ml_scientist.cli paper-evaluation-report \
+  --data paper_review_data \
+  --out artifacts/ml_scientist/bootstrap/paper_evaluation
+```
+
+The reducer requires all 315 criterion-review rows and all 54 manuscript hard
+gates, verifies consistent blind IDs, blocks unresolved major issues, aggregates
+reviewer medians before weighting, verifies 45 distinct review run IDs, seeds,
+randomized orders, report paths, and report hashes, reports ICC(2,k) agreement,
+and computes the three matched writing-arm contrasts with intervals, effect
+sizes, sign tests, and Holm correction. A complete evaluation can still contain failed manuscripts;
+completion means the comparison was fully observed, not that every arm passed.
+Finalization additionally requires `paper_release_decision.json`: a named human
+editor must select a passing W2 manuscript, record a rationale, and point to a
+real final-integrity report.

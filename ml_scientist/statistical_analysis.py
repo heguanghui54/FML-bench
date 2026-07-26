@@ -57,6 +57,12 @@ def build_statistical_analysis_protocol() -> dict[str, Any]:
                 "outputs": "cell win/tie/loss counts and rates",
                 "claim_boundary": "descriptive only because cells share tasks and seeds",
             },
+            {
+                "name": "adaptive_opportunity_interaction",
+                "unit": "within each seed, AdaptiveSearch-minus-baseline mean on dense tasks minus the same mean on sparse tasks",
+                "outputs": "six AdaptiveSearch-versus-baseline interaction estimates, intervals, sign tests, and Holm adjustment",
+                "claim_boundary": "the published post-hoc partition is frozen as a new hypothesis stratum; only new campaign outcomes test it",
+            },
         ],
         "failure_and_missingness": {
             "failed_protected_test": "retain the run and apply the official task-baseline fallback credit",
@@ -96,6 +102,7 @@ def build_statistical_analysis_protocol() -> dict[str, Any]:
             "agent_overall_statistics.csv",
             "paired_agent_comparisons.csv",
             "paired_agent_task_effects.csv",
+            "adaptive_opportunity_interactions.csv",
             "scorer_semantics_sensitivity.csv",
         ],
     }
@@ -127,6 +134,10 @@ def _markdown(protocol: dict[str, Any]) -> str:
             "| populate only from `paired_agent_task_effects.csv` | | | | | | | |",
             "",
             "Task and task-seed win rates are descriptive views of heterogeneity. Only complete, preregistered confirmatory blocks can support the main comparison.",
+            "",
+            "## AdaptiveSearch opportunity-regime interaction",
+            "",
+            "For each seed and baseline, compute AdaptiveSearch minus baseline on each task, average that contrast within the published dense and sparse strata, then subtract sparse from dense. Report all six baseline interactions with intervals and a separate Holm correction. The published partition is a frozen hypothesis label, not local outcome evidence.",
             "",
             "## Failure, multiplicity, and sensitivity rules",
             "",

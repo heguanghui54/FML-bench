@@ -17,6 +17,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
+from .published_prior import task_card_rows
+
 
 OKABE_ITO = ["#0072B2", "#E69F00", "#009E73", "#D55E00", "#CC79A7", "#56B4E9", "#000000"]
 
@@ -696,6 +698,84 @@ def paired_agent_task_effects(records: list[dict[str, Any]]) -> list[dict[str, A
     return rows
 
 
+def adaptive_opportunity_interactions(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Preregistered AdaptiveSearch contrast across published opportunity strata.
+
+    The dense/sparse labels are frozen from the published post-hoc partition.
+    New campaign outcomes test the interaction; published outcomes never enter
+    this estimator.
+    """
+    partition = {row["task_id"]: row["partition"] for row in task_card_rows()}
+    values = _paired_outcomes(records)
+    contexts = sorted({key[:3] for key in values})
+    rows: list[dict[str, Any]] = []
+    adaptive = "adaptivesearch"
+    for phase, model, provider in contexts:
+        agents = sorted({key[5] for key in values if key[:3] == (phase, model, provider)})
+        if adaptive not in agents:
+            continue
+        for baseline in (agent for agent in agents if agent != adaptive):
+            matched, complete = _pair_blocks(values, (phase, model, provider), adaptive, baseline)
+            interactions: list[float] = []
+            dense_task_ids: set[str] = set()
+            sparse_task_ids: set[str] = set()
+            for block in complete.values():
+                dense = [difference for task, difference in block.items() if partition.get(task) == "DENSE-OPP"]
+                sparse = [difference for task, difference in block.items() if partition.get(task) == "SPARSE-OPP"]
+                dense_task_ids.update(task for task in block if partition.get(task) == "DENSE-OPP")
+                sparse_task_ids.update(task for task in block if partition.get(task) == "SPARSE-OPP")
+                if dense and sparse:
+                    interactions.append(statistics.fmean(dense) - statistics.fmean(sparse))
+            summary = _paired_summary(interactions)
+            wins, ties, losses = _sign_counts(interactions)
+            expected_trials = _EXPECTED_TRIALS_BY_PHASE.get(phase)
+            rows.append(
+                {
+                    "phase": phase,
+                    "model": model,
+                    "provider": provider,
+                    "adaptive_agent": adaptive,
+                    "baseline_agent": baseline,
+                    "analysis_class": "confirmatory" if phase.startswith("confirmatory") else "diagnostic",
+                    "partition_source": "arXiv:2605.17373v2 Table 5 post-hoc opportunity-density median split",
+                    "partition_use": "frozen hypothesis stratum; new outcomes only",
+                    "dense_task_n": len(dense_task_ids),
+                    "sparse_task_n": len(sparse_task_ids),
+                    "observed_matched_trial_n": len(matched),
+                    "complete_interaction_trial_n": summary["n"],
+                    "complete_block_gate_passed": (
+                        summary["n"] == expected_trials if expected_trials is not None else summary["n"] > 0
+                    ),
+                    "mean_dense_minus_sparse_adaptive_advantage": summary["mean"],
+                    "median_dense_minus_sparse_adaptive_advantage": summary["median"],
+                    "sd_across_trial_interactions": summary["sd"],
+                    "ci95_halfwidth_student_t": summary["ci_halfwidth"],
+                    "ci95_low": summary["ci_low"],
+                    "ci95_high": summary["ci_high"],
+                    "cohen_dz": summary["cohen_dz"],
+                    "trial_wins_positive_interaction": wins,
+                    "trial_ties": ties,
+                    "trial_losses_negative_interaction": losses,
+                    "exact_sign_p": _exact_two_sided_sign_p(wins, losses),
+                    "interpretation": "positive means AdaptiveSearch has a larger average advantage over this baseline on dense than sparse tasks",
+                }
+            )
+    _holm_adjust(
+        rows,
+        p_field="exact_sign_p",
+        adjusted_field="holm_p_across_adaptive_baselines",
+        family_size_field="holm_family_size",
+    )
+    for row in rows:
+        row["holm_significant_0_05"] = (
+            row["analysis_class"] == "confirmatory"
+            and row["complete_block_gate_passed"]
+            and row["holm_p_across_adaptive_baselines"] is not None
+            and row["holm_p_across_adaptive_baselines"] < 0.05
+        )
+    return rows
+
+
 def collect_scorer_semantics_sensitivity(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Audit scorer-semantic differences without replacing official metrics."""
     rows: list[dict[str, Any]] = []
@@ -1092,6 +1172,23 @@ def write_experiment_artifacts(
             "seed_win_rate_excluding_ties", "claim_boundary",
         ],
     )
+    adaptive_interactions = adaptive_opportunity_interactions(records)
+    _write_csv(
+        out_dir / "adaptive_opportunity_interactions.csv",
+        adaptive_interactions,
+        [
+            "phase", "model", "provider", "adaptive_agent", "baseline_agent",
+            "analysis_class", "partition_source", "partition_use", "dense_task_n",
+            "sparse_task_n", "observed_matched_trial_n", "complete_interaction_trial_n",
+            "complete_block_gate_passed", "mean_dense_minus_sparse_adaptive_advantage",
+            "median_dense_minus_sparse_adaptive_advantage", "sd_across_trial_interactions",
+            "ci95_halfwidth_student_t", "ci95_low", "ci95_high", "cohen_dz",
+            "trial_wins_positive_interaction", "trial_ties",
+            "trial_losses_negative_interaction", "exact_sign_p",
+            "holm_p_across_adaptive_baselines", "holm_family_size",
+            "holm_significant_0_05", "interpretation",
+        ],
+    )
     sensitivity_rows = collect_scorer_semantics_sensitivity(records)
     _write_csv(
         out_dir / "scorer_semantics_sensitivity.csv",
@@ -1149,10 +1246,18 @@ def write_experiment_artifacts(
         "overall_agent_group_count": len(overall_statistics),
         "paired_agent_comparison_count": len(paired_comparisons),
         "paired_agent_task_effect_count": len(task_effects),
+        "adaptive_opportunity_interaction_count": len(adaptive_interactions),
+        "complete_confirmatory_adaptive_interaction_count": sum(
+            row["analysis_class"] == "confirmatory" and row["complete_block_gate_passed"]
+            for row in adaptive_interactions
+        ),
         "scorer_sensitivity_run_count": len(sensitivity_rows),
         "best_step_semantics_difference_count": sensitivity_status["first_vs_last_best_step_difference_n"],
         "exploration_membership_difference_count": sensitivity_status["exploration_membership_difference_n"],
         "process_metric_record_count": len(process_records),
+        "process_metric_run_coverage_count": len(
+            {(row["phase"], row["trial"], row["agent"], row["task"]) for row in process_records}
+        ),
         "process_metric_group_count": len(process_summaries),
         "process_metric_figure_count": len(process_figures),
         "experimental_figures_emitted": figure_emitted or overall_figure_emitted or bool(process_figures),

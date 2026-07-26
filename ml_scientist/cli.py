@@ -13,7 +13,8 @@ from .governance import initialize_governance_artifacts
 from .handbook import write_handbook, write_provisional_paper
 from .knowledge_base import write_knowledge_base
 from .planner import build_research_paper_plan
-from .paper_evaluation import write_paper_evaluation_protocol
+from .paper_evaluation import evaluate_paper_evaluation, write_paper_evaluation_protocol
+from .paper_package import write_paper_package
 from .published_prior import write_published_prior
 from .reporting import write_catalog_artifacts, write_experiment_artifacts
 
@@ -52,6 +53,12 @@ def parse_args() -> argparse.Namespace:
     published.add_argument("--out", type=Path, required=True)
     paper_eval = sub.add_parser("paper-evaluation", help="Write the manuscript-quality evaluation protocol")
     paper_eval.add_argument("--out", type=Path, required=True)
+    paper_eval_report = sub.add_parser("paper-evaluation-report", help="Reduce completed blinded manuscript-review records")
+    paper_eval_report.add_argument("--data", type=Path, required=True)
+    paper_eval_report.add_argument("--out", type=Path, required=True)
+    paper_package = sub.add_parser("paper-package", help="Build an evidence-locked manuscript handoff from generated artifacts")
+    paper_package.add_argument("--artifact-root", type=Path, required=True)
+    paper_package.add_argument("--out", type=Path, required=True)
     knowledge = sub.add_parser("knowledge-base", help="Write source-grounded agent and task dossiers")
     knowledge.add_argument("--out", type=Path, required=True)
     campaign = sub.add_parser("campaign", help="Execute or dry-run a frozen, resumable run matrix")
@@ -103,6 +110,21 @@ def main() -> None:
         write_published_prior(args.out)
     elif args.command == "paper-evaluation":
         write_paper_evaluation_protocol(args.out)
+    elif args.command == "paper-evaluation-report":
+        evaluate_paper_evaluation(args.data, args.out)
+    elif args.command == "paper-package":
+        artifact_root = args.artifact_root
+        write_paper_package(
+            catalog,
+            args.out,
+            catalog_dir=artifact_root / "catalog",
+            knowledge_base_dir=artifact_root / "knowledge_base",
+            plans_dir=artifact_root / "plans",
+            published_prior_dir=artifact_root / "published_prior",
+            protocol_dir=artifact_root / "protocol",
+            experiments_dir=artifact_root / "experiments",
+            paper_evaluation_dir=artifact_root / "paper_evaluation",
+        )
     elif args.command == "knowledge-base":
         write_knowledge_base(repo, catalog, args.out)
     elif args.command == "campaign":
@@ -136,6 +158,17 @@ def main() -> None:
         for task in catalog["tasks"]:
             _write_json(args.out / "plans" / f"{task['task_id']}.json", build_research_paper_plan(task, catalog["agents"]))
         write_experiment_artifacts(args.results, args.out / "experiments", catalog, args.metric_reports)
+        write_paper_package(
+            catalog,
+            args.out / "paper",
+            catalog_dir=args.out / "catalog",
+            knowledge_base_dir=args.out / "knowledge_base",
+            plans_dir=args.out / "plans",
+            published_prior_dir=args.out / "published_prior",
+            protocol_dir=args.out / "protocol",
+            experiments_dir=args.out / "experiments",
+            paper_evaluation_dir=args.out / "paper_evaluation",
+        )
 
 
 if __name__ == "__main__":

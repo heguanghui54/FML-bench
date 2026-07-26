@@ -366,6 +366,16 @@ heterogeneity, and separately named first-achieved/valid-only scorer sensitivity
 diagnostics. With only three planned confirmatory seeds, estimates and intervals
 lead the paper; non-significance is never presented as equivalence.
 
+The generated `paper/` directory is an evidence-locked academic handoff rather
+than an empty outline. It includes the research questions, argument blueprint,
+claim-to-artifact registry, table/figure plan, substantive system and experiment
+Methods, and machine-readable readiness gates. Numerical Results, conclusion
+claims, peer review, and final PDF remain unavailable until real campaign and
+paper-evaluation artifacts satisfy those gates. The paper evaluator reduces all
+315 blinded criterion scores and 54 hard-gate checks into manuscript decisions,
+reviewer agreement, and matched W0/W1/W2 contrasts without editing the papers or
+mixing manuscript scores with FML metrics.
+
 
 ## Repository layout
 

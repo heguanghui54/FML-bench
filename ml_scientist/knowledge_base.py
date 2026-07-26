@@ -497,8 +497,8 @@ def write_knowledge_base(root: Path, catalog: dict[str, Any], out_dir: Path) -> 
             {
                 "requirement": "produce and evaluate a good new paper",
                 "status": "NOT_YET_PROVEN",
-                "evidence": ["../paper/provisional_paper_outline.md", "../paper_evaluation/paper_evaluation_protocol.json", "../paper_evaluation/paper_evaluation_status.json"],
-                "proof": "Writing and review contracts exist, but result prose remains locked and no blinded paper reviews have been completed.",
+                "evidence": ["../paper/evidence_locked_manuscript.md", "../paper/claim_evidence_registry.csv", "../paper/paper_readiness.json", "../paper_evaluation/paper_evaluation_protocol.json", "../paper_evaluation/paper_evaluation_status.json"],
+                "proof": "A substantive Methods manuscript, claim map, figure plan, and readiness gates exist, but numerical Results remain locked and no blinded paper reviews have been completed.",
             },
         ],
     }

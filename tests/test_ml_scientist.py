@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 import csv
+import hashlib
 import json
 from pathlib import Path
 
@@ -12,7 +13,8 @@ from ml_scientist.experiment_design import build_experiment_protocol, preflight_
 from ml_scientist.governance import EvidenceGateError, EvidenceGatedSkillRegistry, initialize_governance_artifacts
 from ml_scientist.knowledge_base import build_agent_dossiers, build_metric_implementation_audit, build_task_dossiers, write_knowledge_base
 from ml_scientist.planner import build_research_paper_plan, validate_plan
-from ml_scientist.paper_evaluation import build_paper_evaluation_protocol, write_paper_evaluation_protocol
+from ml_scientist.paper_evaluation import build_paper_evaluation_protocol, evaluate_paper_evaluation, write_paper_evaluation_protocol
+from ml_scientist.paper_package import write_paper_package
 from ml_scientist.published_prior import (
     agent_summary_rows,
     agent_task_rows,
@@ -24,6 +26,7 @@ from ml_scientist.published_prior import (
     write_published_prior,
 )
 from ml_scientist.reporting import (
+    adaptive_opportunity_interactions,
     collect_scorer_semantics_sensitivity,
     paired_agent_comparisons,
     paired_agent_task_effects,
@@ -250,6 +253,30 @@ class ReportingTests(unittest.TestCase):
         self.assertIn("Holm", protocol["primary_analysis"]["multiplicity"])
         self.assertFalse(protocol["sensitivity_analyses"][0]["replacement_allowed"])
 
+    def test_adaptive_opportunity_interaction_uses_new_outcomes_in_frozen_strata(self):
+        tasks = [
+            "Continual_Learning_pycil", "Data_Efficiency_usb",
+            "Generalization_domainbed", "Generalization_domainbed_officehome",
+            "Robustness_openood", "Privacy_opacus", "Privacy_privacymeter",
+            "Robustness_and_Reliability_art",
+        ]
+        agents = ["theaiscientist", "ai_scientist_v2", "aide", "aira_mcts", "autoresearch", "openevolve", "adaptivesearch"]
+        dense = {"Privacy_opacus", "Privacy_privacymeter", "Robustness_and_Reliability_art"}
+        records = []
+        for agent_index, agent in enumerate(agents):
+            for trial in range(1, 4):
+                for task in tasks:
+                    baseline_value = 0.01 * agent_index + 0.001 * trial
+                    if agent == "adaptivesearch":
+                        baseline_value += 0.20 if task in dense else 0.05
+                    records.append({"phase": "confirmatory_lite", "model": "m", "provider": "p", "trial": trial, "task": task, "agent": agent, "normalized_improvement": baseline_value})
+        rows = adaptive_opportunity_interactions(records)
+        self.assertEqual(len(rows), 6)
+        self.assertTrue(all(row["dense_task_n"] == 3 and row["sparse_task_n"] == 5 for row in rows))
+        self.assertTrue(all(row["complete_block_gate_passed"] for row in rows))
+        self.assertTrue(all(row["holm_family_size"] == 6 for row in rows))
+        self.assertTrue(all(abs(row["mean_dense_minus_sparse_adaptive_advantage"] - 0.15) < 1e-12 for row in rows))
+
 
 class PublishedPriorTests(unittest.TestCase):
     def test_complete_published_tables_are_transcribed(self):
@@ -315,8 +342,113 @@ class PaperEvaluationTests(unittest.TestCase):
             self.assertEqual(status["status"], "TEMPLATE_NO_PAPER_SCORES")
             self.assertFalse(status["fml_metric_merge_allowed"])
             self.assertEqual(status["planned_review_row_n"], 3 * 3 * 5 * 7)
+            self.assertEqual(status["planned_hard_gate_row_n"], 3 * 3 * 6)
             self.assertTrue((root / "paper_evaluation_protocol.json").is_file())
             self.assertTrue((root / "paper_review_score_template.csv").is_file())
+            self.assertTrue((root / "issue_disposition_template.csv").is_file())
+            self.assertTrue((root / "paper_release_decision_template.json").is_file())
+
+    def test_completed_blinded_reviews_reduce_to_matched_writing_arm_effects(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template"
+            data = root / "data"
+            report = root / "report"
+            data.mkdir()
+            write_paper_evaluation_protocol(template)
+            with (template / "paper_review_score_template.csv").open(encoding="utf-8") as handle:
+                score_rows = list(csv.DictReader(handle))
+                score_fields = list(score_rows[0])
+            arm_scores = {"W0_one_shot": 3, "W1_gated_no_peer_revision": 4, "W2_full_pipeline": 5}
+            arm_index = {arm: index for index, arm in enumerate(arm_scores)}
+            reviewer_roles = ["editor_in_chief", "methodology", "statistics", "reproducibility", "devils_advocate"]
+            reports_dir = data / "reports"
+            reports_dir.mkdir()
+            for row in score_rows:
+                row["manuscript_blind_id"] = f"blind-{arm_index[row['arm_private']]}-{row['draft']}"
+                order = arm_index[row["arm_private"]] * 15 + (int(row["draft"]) - 1) * 5 + reviewer_roles.index(row["reviewer_role"]) + 1
+                report_path = reports_dir / f"review-{order:02d}.md"
+                if not report_path.exists():
+                    report_path.write_text(f"synthetic independent review {order}\n", encoding="utf-8")
+                row["reviewer_run_id"] = f"run-{order:02d}"
+                row["reviewer_seed"] = str(9000 + order)
+                row["review_order"] = str(order)
+                row["reviewer_model"] = "fixed-review-model"
+                row["report_path"] = str(report_path)
+                row["report_sha256"] = hashlib.sha256(report_path.read_bytes()).hexdigest()
+                row["score_1_to_5"] = str(arm_scores[row["arm_private"]])
+                row["major_issue"] = "false"
+                row["review_complete"] = "true"
+            with (data / "review_scores.csv").open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=score_fields, lineterminator="\n")
+                writer.writeheader()
+                writer.writerows(score_rows)
+            with (template / "hard_gate_template.csv").open(encoding="utf-8") as handle:
+                hard_rows = list(csv.DictReader(handle))
+                hard_fields = list(hard_rows[0])
+            for row in hard_rows:
+                row["manuscript_blind_id"] = f"blind-{arm_index[row['arm_private']]}-{row['draft']}"
+                row["pass"] = "true"
+            with (data / "hard_gate_results.csv").open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=hard_fields, lineterminator="\n")
+                writer.writeheader()
+                writer.writerows(hard_rows)
+            (data / "review_reports.json").write_text('{"reports": "synthetic test fixture"}', encoding="utf-8")
+            (data / "claim_evidence_map.json").write_text('{"claims": "synthetic test fixture"}', encoding="utf-8")
+            (data / "reproducibility_manifest.json").write_text('{"manifest": "synthetic test fixture"}', encoding="utf-8")
+            (data / "issue_dispositions.csv").write_text("manuscript_blind_id,issue_id,severity,status,owner,evidence_path,rationale\n", encoding="utf-8")
+            summary = evaluate_paper_evaluation(data, report)
+            self.assertEqual(summary["status"], "COMPLETE_EVALUATION")
+            self.assertEqual(summary["evaluated_manuscript_n"], 9)
+            self.assertEqual(summary["paper_threshold_pass_n"], 6)
+            self.assertAlmostEqual(summary["primary_contrast"]["mean_difference_left_minus_right"], 2.0)
+            self.assertEqual(summary["primary_contrast"]["matched_draft_n"], 3)
+            self.assertTrue((report / "manuscript_criterion_statistics.csv").is_file())
+            self.assertTrue((report / "writing_arm_paired_comparisons.csv").is_file())
+
+
+class PaperPackageTests(unittest.TestCase):
+    def test_methods_are_substantive_but_empirical_claims_stay_locked(self):
+        catalog = build_catalog(ROOT)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_catalog_artifacts(catalog, root / "catalog")
+            write_experiment_protocol(catalog, root / "protocol")
+            write_experiment_artifacts(root / "missing-results", root / "experiments", catalog)
+            write_paper_evaluation_protocol(root / "paper_evaluation")
+            (root / "knowledge_base").mkdir()
+            (root / "knowledge_base" / "metric_implementation_audit.json").write_text("{}", encoding="utf-8")
+            (root / "published_prior").mkdir()
+            (root / "published_prior" / "provenance_manifest.json").write_text("{}", encoding="utf-8")
+            (root / "plans").mkdir()
+            for task in catalog["tasks"]:
+                (root / "plans" / f"{task['task_id']}.json").write_text("{}", encoding="utf-8")
+            readiness = write_paper_package(
+                catalog,
+                root / "paper",
+                catalog_dir=root / "catalog",
+                knowledge_base_dir=root / "knowledge_base",
+                plans_dir=root / "plans",
+                published_prior_dir=root / "published_prior",
+                protocol_dir=root / "protocol",
+                experiments_dir=root / "experiments",
+                paper_evaluation_dir=root / "paper_evaluation",
+            )
+            self.assertEqual(readiness["stage"], "METHODS_ONLY_EMPIRICAL_SECTIONS_LOCKED")
+            self.assertFalse(readiness["ready_for_numerical_results"])
+            config = json.loads((root / "paper" / "paper_configuration.json").read_text(encoding="utf-8"))
+            self.assertEqual(config["confirmation_status"], "AWAITING_HUMAN_CONFIRMATION")
+            manuscript = (root / "paper" / "evidence_locked_manuscript.md").read_text(encoding="utf-8")
+            self.assertIn("## 4. Experimental protocol", manuscript)
+            self.assertIn("[LOCKED", manuscript)
+            with (root / "paper" / "claim_evidence_registry.csv").open(encoding="utf-8") as handle:
+                claims = list(csv.DictReader(handle))
+            self.assertEqual(len(claims), 10)
+            self.assertEqual(next(row for row in claims if row["claim_id"] == "K1")["status"], "READY_STATIC")
+            self.assertTrue(next(row for row in claims if row["claim_id"] == "E1")["status"].startswith("LOCKED"))
+            manifest = json.loads((root / "paper" / "paper_package_manifest.json").read_text(encoding="utf-8"))
+            self.assertFalse(manifest["new_empirical_results_present"])
+            self.assertFalse(manifest["published_prior_merged_into_new_results"])
 
 
 class KnowledgeBaseTests(unittest.TestCase):
