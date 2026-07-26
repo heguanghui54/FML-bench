@@ -346,6 +346,11 @@ all artifacts and forbids merging these published aggregates with new campaign
 trials. They can guide Stage-3 planning and Stage-5 review, but cannot unlock a
 new empirical claim or substitute for a missing experiment.
 
+FML deliberately excludes paper writing and review from its controlled agent
+scores. The bootstrap therefore creates a separate `paper_evaluation/` protocol
+with blocking claim/provenance gates and blinded multi-role manuscript review;
+paper-quality scores are never averaged with FML performance or process metrics.
+
 
 ## Repository layout
 

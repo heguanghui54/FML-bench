@@ -57,6 +57,9 @@ This writes:
   current paper's 108 agent-task aggregate cells, seven-agent summary, twelve
   process correlations, eighteen task cards, and four statistical SVG charts;
 - a provisional paper outline, methods section, and locked claim registry;
+- a separate manuscript-quality protocol with six blocking integrity gates,
+  seven weighted review criteria, five blinded reviewer roles, and matched
+  one-shot/gated/full-pipeline writing ablations;
 - a preregistered pilot plus balanced 7-agent x 8-task x 3-trial FML-Lite
   confirmatory matrix, with every independent trial stored in a separate result
   root so the upstream scorer cannot silently select the wrong replicate.
@@ -140,3 +143,18 @@ sparse-opportunity tasks start with multi-branch exploration. A matched-budget
 counterfactual search family is always required, local frozen evidence may
 override the prior, and peer review verifies that published and local evidence
 classes never merge.
+
+## Paper-quality evaluation is not an FML metric
+
+The controlled FML comparison removed native paper-writing and automated-review
+modules, so manuscript quality cannot honestly inherit an FML score. Bootstrap
+therefore writes `paper_evaluation/` as a separate local extension. Its six
+hard gates cover traceability, published/local evidence separation, citations,
+method provenance, protected-test leakage, and amendment closure. Only papers
+passing every hard gate proceed to a blinded five-role, seven-criterion rubric;
+scores are never averaged with normalized improvement or process metrics.
+
+The protocol also preregisters three writing arms—one-shot, gated without peer
+revision, and the full review/amendment/re-review pipeline—with three independent
+drafts per arm and matched evidence, model, and token budget. The generated
+templates contain no scores until real manuscripts and reviews exist.

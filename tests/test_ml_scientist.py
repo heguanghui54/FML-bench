@@ -11,6 +11,7 @@ from ml_scientist.campaign import CampaignError, load_run_matrix, run_campaign
 from ml_scientist.experiment_design import build_experiment_protocol, preflight_environment, write_experiment_protocol
 from ml_scientist.governance import EvidenceGateError, EvidenceGatedSkillRegistry, initialize_governance_artifacts
 from ml_scientist.planner import build_research_paper_plan, validate_plan
+from ml_scientist.paper_evaluation import build_paper_evaluation_protocol, write_paper_evaluation_protocol
 from ml_scientist.published_prior import (
     agent_summary_rows,
     agent_task_rows,
@@ -105,6 +106,7 @@ class PlannerTests(unittest.TestCase):
         self.assertIn("final-paper-integrity", nodes)
         self.assertEqual(nodes["paper-finalize"]["depends_on"], ["final-paper-integrity"])
         self.assertTrue(self.plan["academic_publication_contract"]["final_integrity_restarts_from_scratch"])
+        self.assertIn("separate local extension", nodes["paper-integrity"]["metadata"]["paper_metric_boundary"])
 
 
 class ReportingTests(unittest.TestCase):
@@ -217,6 +219,27 @@ class PublishedPriorTests(unittest.TestCase):
         self.assertEqual(sparse["strategy_hypothesis"]["initial_mode"], "multi_branch_exploration")
         self.assertFalse(dense["claim_unlock_eligible"])
         self.assertIn("autoresearch", sparse["strategy_hypothesis"]["required_counterfactual_operators"])
+
+
+class PaperEvaluationTests(unittest.TestCase):
+    def test_paper_quality_is_separate_from_fml_and_hard_gated(self):
+        protocol = build_paper_evaluation_protocol()
+        self.assertEqual(protocol["benchmark_status"], "local_extension_not_part_of_fml_bench")
+        self.assertTrue(protocol["separation_from_fml"]["scores_must_not_be_averaged_together"])
+        self.assertEqual(len(protocol["hard_gates"]), 6)
+        self.assertEqual(len(protocol["reviewer_roles"]), 5)
+        self.assertEqual(sum(row["weight"] for row in protocol["rubric"]), 1.0)
+        self.assertEqual(protocol["matched_writing_ablation"]["total_planned_reviews"], 45)
+
+    def test_paper_evaluation_writes_empty_score_templates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            status = write_paper_evaluation_protocol(root)
+            self.assertEqual(status["status"], "TEMPLATE_NO_PAPER_SCORES")
+            self.assertFalse(status["fml_metric_merge_allowed"])
+            self.assertEqual(status["planned_review_row_n"], 3 * 3 * 5 * 7)
+            self.assertTrue((root / "paper_evaluation_protocol.json").is_file())
+            self.assertTrue((root / "paper_review_score_template.csv").is_file())
 
 
 class ExperimentDesignTests(unittest.TestCase):

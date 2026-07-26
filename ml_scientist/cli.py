@@ -12,6 +12,7 @@ from .experiment_design import preflight_environment, write_experiment_protocol
 from .governance import initialize_governance_artifacts
 from .handbook import write_handbook, write_provisional_paper
 from .planner import build_research_paper_plan
+from .paper_evaluation import write_paper_evaluation_protocol
 from .published_prior import write_published_prior
 from .reporting import write_catalog_artifacts, write_experiment_artifacts
 
@@ -48,6 +49,8 @@ def parse_args() -> argparse.Namespace:
     governance.add_argument("--out", type=Path, required=True)
     published = sub.add_parser("published-prior", help="Write source-labeled published FML tables and charts")
     published.add_argument("--out", type=Path, required=True)
+    paper_eval = sub.add_parser("paper-evaluation", help="Write the manuscript-quality evaluation protocol")
+    paper_eval.add_argument("--out", type=Path, required=True)
     campaign = sub.add_parser("campaign", help="Execute or dry-run a frozen, resumable run matrix")
     campaign.add_argument("--matrix", type=Path, required=True)
     campaign.add_argument("--logs", type=Path, required=True)
@@ -95,6 +98,8 @@ def main() -> None:
         initialize_governance_artifacts(catalog, args.out)
     elif args.command == "published-prior":
         write_published_prior(args.out)
+    elif args.command == "paper-evaluation":
+        write_paper_evaluation_protocol(args.out)
     elif args.command == "campaign":
         state = run_campaign(
             matrix_path=args.matrix,
@@ -109,6 +114,7 @@ def main() -> None:
         write_catalog_artifacts(catalog, args.out / "catalog")
         write_handbook(catalog, args.out / "knowledge")
         write_published_prior(args.out / "published_prior")
+        write_paper_evaluation_protocol(args.out / "paper_evaluation")
         write_provisional_paper(catalog, args.out / "paper")
         initialize_governance_artifacts(catalog, args.out / "governance")
         write_experiment_protocol(
