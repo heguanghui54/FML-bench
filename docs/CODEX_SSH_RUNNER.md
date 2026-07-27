@@ -129,6 +129,14 @@ performance, not the published 100-step condition. AdaptiveSearch's 50-step
 phase transition cannot fire in this matrix, so a branching advantage must not
 be claimed from these results.
 
+A quarantined engineering calibration measured one native PrivacyMeter
+validation at 1918.81 seconds on this RTX 3060 Ti. Because the unchanged
+protected-test path regenerates its checkpoint with one additional validation,
+the PrivacyMeter portion alone is forecast at 7.46 validation-GPU-hours for the
+pilot and 44.77 for the confirmatory matrix, before controller and test
+overhead. Calibration scores remain ineligible for model selection or paper
+claims.
+
 If i4h is using the GPU through the paper-extension transient service, pause
 the owning unit (stopping only its child container lets the service continue):
 
