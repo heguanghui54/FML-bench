@@ -523,10 +523,29 @@ class ExperimentDesignTests(unittest.TestCase):
         self.assertIn("matched seed block", protocol["analysis_policy"]["primary_uncertainty_unit"])
         self.assertIn("Holm", protocol["analysis_policy"]["multiplicity"])
 
+    def test_codex_cli_ssh_condition_is_explicit_in_every_run(self):
+        protocol, rows = build_experiment_protocol(
+            self.catalog,
+            model="gpt-5.6-sol",
+            provider="CodexCLI",
+            eval_backend="ssh",
+            ssh_host="ubuntu-heshi",
+            remote_project_root="/media/heshi/game/fml-scientist/repo",
+        )
+        self.assertEqual(protocol["factors"]["provider"], "CodexCLI")
+        self.assertEqual(protocol["factors"]["execution_backend"], "ssh")
+        self.assertIn("not an exact reproduction", protocol["execution_platform_contract"]["controller_model_condition"])
+        self.assertTrue(all("--provider CodexCLI" in row["command"] for row in rows))
+        self.assertTrue(all("--eval-backend ssh" in row["command"] for row in rows))
+        self.assertTrue(all("--remote-project-root /media/heshi/game/fml-scientist/repo" in row["command"] for row in rows))
+
     def test_preflight_reports_key_presence_without_key_value(self):
         report = preflight_environment(self.catalog, provider="OpenAI", model="SET_MODEL", repo=ROOT)
         self.assertIn("required_key_present", report)
         self.assertNotIn("key_value", report)
+        self.assertEqual(report["lite_workspace_task_total"], 8)
+        self.assertEqual(report["lite_environment_task_total"], 8)
+        self.assertIn("ready_for_full_extension", report)
         self.assertFalse(report["ready"])
 
     def test_llm_calls_use_the_frozen_trial_seed(self):

@@ -33,13 +33,21 @@ class BenchmarkRunner:
     """
 
     def __init__(self, benchmark_name: str, agent: BaseAgent, workspace_label: str = None,
-                 output_dir: str = "benchmark_results", save_code_backup: bool = False):
+                 output_dir: str = "benchmark_results", save_code_backup: bool = False,
+                 eval_backend: str = "local", ssh_host: str = "ubuntu-heshi",
+                 remote_project_root: str = "/media/heshi/game/fml-scientist/repo",
+                 require_gpu_idle: bool = True, keep_remote_workspace: bool = False):
         self.benchmark_name = benchmark_name
         self.agent = agent
         self.agent_name = agent.config.agent_type.value
         self.workspace_label = workspace_label
         self.output_dir = output_dir
         self.save_code_backup = save_code_backup
+        self.eval_backend = eval_backend
+        self.ssh_host = ssh_host
+        self.remote_project_root = remote_project_root
+        self.require_gpu_idle = require_gpu_idle
+        self.keep_remote_workspace = keep_remote_workspace
         self._workspace_copy_path = None
         self.config = self._load_config()
         self._setup_workspace(workspace_label)
@@ -67,6 +75,13 @@ class BenchmarkRunner:
             # 2b. Propagate the code-backup toggle into benchmark_config so the
             # executor (constructed by every agent from benchmark_config) can read it.
             self.config["save_code_backup"] = self.save_code_backup
+            self.config["_execution_backend"] = {
+                "name": self.eval_backend,
+                "ssh_host": self.ssh_host,
+                "remote_project_root": self.remote_project_root,
+                "require_gpu_idle": self.require_gpu_idle,
+                "keep_remote_workspace": self.keep_remote_workspace,
+            }
 
             # 3. Inject runtime params into agent config
             self.agent.config.runtime_params.update({
@@ -78,6 +93,7 @@ class BenchmarkRunner:
                 "task_description": self.task_description,
                 "workspace_label": self.workspace_label,
                 "output_dir": self.output_dir,
+                "eval_backend": self.eval_backend,
             })
 
             # 3. Run agent (with wall-clock timing)

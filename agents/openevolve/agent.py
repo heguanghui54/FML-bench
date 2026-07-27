@@ -48,7 +48,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from benchmark.executor import BenchmarkExecutor
+from benchmark.executor_factory import make_executor
 from benchmark.utils import extract_primary_metric, get_filtered_results_for_prompt
 
 from ..base import AgentConfig, AgentResult, BaseAgent, StepResult
@@ -810,7 +810,7 @@ class OpenEvolveAgent(BaseAgent):
 
         # -- create executor --
         timeout = self.config.agent_params.get("execute_timeout", 2400)
-        self.executor = BenchmarkExecutor(
+        self.executor = make_executor(
             benchmark_config, agent_name, benchmark_name,
             f"{ts}_openevolve", parent_timestamp=ts, timeout=timeout,
             output_dir=self._output_dir,
@@ -1411,7 +1411,7 @@ class OpenEvolveAgent(BaseAgent):
             if self.executor:
                 self.executor.cleanup()
             test_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.executor = BenchmarkExecutor(
+            self.executor = make_executor(
                 benchmark_config,
                 agent_name,
                 benchmark_name,

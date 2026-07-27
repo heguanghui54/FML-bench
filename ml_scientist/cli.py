@@ -43,10 +43,16 @@ def parse_args() -> argparse.Namespace:
     protocol.add_argument("--provider", default="OpenAI")
     protocol.add_argument("--results", default="benchmark_results/controlled")
     protocol.add_argument("--full-extension", action="store_true")
+    protocol.add_argument("--eval-backend", choices=["local", "ssh"], default="local")
+    protocol.add_argument("--ssh-host", default="ubuntu-heshi")
+    protocol.add_argument("--remote-project-root", default="/media/heshi/game/fml-scientist/repo")
     preflight = sub.add_parser("preflight", help="Check live-run prerequisites without exposing secrets")
     preflight.add_argument("--out", type=Path, required=True)
     preflight.add_argument("--model", default="SET_MODEL")
     preflight.add_argument("--provider", default="OpenAI")
+    preflight.add_argument("--eval-backend", choices=["local", "ssh"], default="local")
+    preflight.add_argument("--ssh-host", default="ubuntu-heshi")
+    preflight.add_argument("--remote-project-root", default="/media/heshi/game/fml-scientist/repo")
     governance = sub.add_parser("governance-init", help="Initialize frozen memory and evidence-gated skill registries")
     governance.add_argument("--out", type=Path, required=True)
     published = sub.add_parser("published-prior", help="Write source-labeled published FML tables and charts")
@@ -73,6 +79,9 @@ def parse_args() -> argparse.Namespace:
     bootstrap.add_argument("--metric-reports", type=Path, default=Path("metric_reports"))
     bootstrap.add_argument("--model", default="SET_MODEL")
     bootstrap.add_argument("--provider", default="OpenAI")
+    bootstrap.add_argument("--eval-backend", choices=["local", "ssh"], default="local")
+    bootstrap.add_argument("--ssh-host", default="ubuntu-heshi")
+    bootstrap.add_argument("--remote-project-root", default="/media/heshi/game/fml-scientist/repo")
     return parser.parse_args()
 
 
@@ -98,11 +107,18 @@ def main() -> None:
             provider=args.provider,
             output_dir=args.results,
             include_full_extension=args.full_extension,
+            eval_backend=args.eval_backend,
+            ssh_host=args.ssh_host,
+            remote_project_root=args.remote_project_root,
         )
     elif args.command == "preflight":
         _write_json(
             args.out / "preflight.json",
-            preflight_environment(catalog, provider=args.provider, model=args.model, repo=repo),
+            preflight_environment(
+                catalog, provider=args.provider, model=args.model, repo=repo,
+                eval_backend=args.eval_backend, ssh_host=args.ssh_host,
+                remote_project_root=args.remote_project_root,
+            ),
         )
     elif args.command == "governance-init":
         initialize_governance_artifacts(catalog, args.out)
@@ -150,10 +166,17 @@ def main() -> None:
             args.out / "protocol",
             model=args.model,
             provider=args.provider,
+            eval_backend=args.eval_backend,
+            ssh_host=args.ssh_host,
+            remote_project_root=args.remote_project_root,
         )
         _write_json(
             args.out / "protocol" / "preflight.json",
-            preflight_environment(catalog, provider=args.provider, model=args.model, repo=repo),
+            preflight_environment(
+                catalog, provider=args.provider, model=args.model, repo=repo,
+                eval_backend=args.eval_backend, ssh_host=args.ssh_host,
+                remote_project_root=args.remote_project_root,
+            ),
         )
         for task in catalog["tasks"]:
             _write_json(args.out / "plans" / f"{task['task_id']}.json", build_research_paper_plan(task, catalog["agents"]))

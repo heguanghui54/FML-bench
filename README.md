@@ -27,6 +27,7 @@ description, and are asked to iteratively improve the baseline.
 - [Setup](#setup)
 - [Run an agent (example)](#run-an-agent-example)
 - [Run with other models](#run-with-other-models)
+- [Codex CLI with Ubuntu SSH](#codex-cli-with-ubuntu-ssh)
 - [Run on other tasks](#run-on-other-tasks)
 - [FML-bench-Lite](#fml-bench-lite)
 - [Remote GPU execution (Modal)](#remote-gpu-execution-modal)
@@ -177,6 +178,22 @@ python run_agent_benchmark.py \
     agent.ai_scientist_v2.num_ideas=5 \
     agent.ai_scientist_v2.max_debug_depth=2
 ```
+
+
+## Codex CLI with Ubuntu SSH
+
+This branch supports an API-key-free experimental condition in which the
+authenticated Codex CLI on the Mac supplies text-only model responses while an
+Ubuntu NVIDIA runner executes validation and test commands. Codex is sandboxed
+in an empty read-only directory; any Codex tool activity is rejected and every
+call is audited. The SSH backend keeps task environments, datasets, caches, and
+checkpoints below `/media/heshi/game/fml-scientist` and blocks GPU tasks while
+another compute workload is active.
+
+This condition is intended for learning and pipeline development, and is
+explicitly labeled as a non-exact reproduction of published API-model runs.
+See [the Codex/SSH runner guide](docs/CODEX_SSH_RUNNER.md) for bootstrap,
+preflight, and controlled-run commands.
 
 
 ## Run on other tasks

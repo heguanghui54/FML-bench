@@ -15,16 +15,38 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import copy
+import hashlib
 import os
 import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 WORKSPACE = PROJECT_ROOT / "workspace"
 ML_TASKS = PROJECT_ROOT / "ml_tasks"
+DATASETS_ROOT = Path(os.environ.get("FML_DATASETS_ROOT", PROJECT_ROOT / "data_cache"))
+
+CIFAR_ARCHIVES = {
+    "cifar10": {
+        "filename": "cifar-10-python.tar.gz",
+        "url": "https://cave.cs.toronto.edu/kriz/cifar-10-python.tar.gz",
+        "md5": "c58f30108f718f92721af3b95e74349a",
+        "directory": "cifar-10-batches-py",
+        "required": ("batches.meta", "data_batch_1", "test_batch"),
+    },
+    "cifar100": {
+        "filename": "cifar-100-python.tar.gz",
+        "url": "https://cave.cs.toronto.edu/kriz/cifar-100-python.tar.gz",
+        "md5": "eb9058c3a382ffc7106e4002c42a8d85",
+        "directory": "cifar-100-python",
+        "required": ("meta", "train", "test"),
+    },
+}
 
 
 # ---------------------------------------------------------------------------
@@ -61,15 +83,19 @@ def have_command(name: str) -> bool:
     return shutil.which(name) is not None
 
 
-def conda_env_exists(name: str) -> bool:
+def conda_env_prefix(name: str) -> Path | None:
     res = run(["conda", "env", "list"], capture=True, check=True)
     for line in res.stdout.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
         if line.split()[0] == name:
-            return True
-    return False
+            return Path(line.split()[-1])
+    return None
+
+
+def conda_env_exists(name: str) -> bool:
+    return conda_env_prefix(name) is not None
 
 
 def conda_run(env: str, script: str, cwd=None) -> None:
@@ -83,14 +109,26 @@ def conda_create(name: str, python_version: str, pip_steps: list) -> None:
     Each step in pip_steps is a string; it is executed with `bash -lc` after
     activating the env, so it can use `pip`, `conda install`, etc.
     """
-    if conda_env_exists(name):
-        info(f"conda env '{name}' already exists, skipping")
+    signature = hashlib.sha256(
+        (python_version + "\0" + "\0".join(pip_steps)).encode("utf-8")
+    ).hexdigest()
+    prefix = conda_env_prefix(name)
+    if prefix is None:
+        info(f"creating conda env '{name}' (python={python_version})")
+        run(["conda", "create", "-n", name, f"python={python_version}", "-y"])
+        prefix = conda_env_prefix(name)
+    marker = prefix / ".fml_setup_complete"
+    if marker.is_file() and marker.read_text(encoding="utf-8").strip() == signature:
+        info(f"conda env '{name}' is complete, skipping")
         return
-    info(f"creating conda env '{name}' (python={python_version})")
-    run(["conda", "create", "-n", name, f"python={python_version}", "-y"])
+    info(f"installing or resuming packages in conda env '{name}'")
     for step in pip_steps:
-        full = f"source $(conda info --base)/etc/profile.d/conda.sh && conda activate {name} && {step}"
+        full = (
+            "export PYTHONNOUSERSITE=1 && "
+            f"source $(conda info --base)/etc/profile.d/conda.sh && conda activate {name} && {step}"
+        )
         run(["bash", "-lc", full])
+    marker.write_text(signature + "\n", encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -108,13 +146,24 @@ def clone_repo(parent_dir: Path, repo_name: str, url: str, commit: str,
     repo_path = parent_dir / repo_name
     if not (repo_path / ".git").exists():
         info(f"cloning {url} -> {repo_path.relative_to(PROJECT_ROOT)}")
+        clone_command = ["git", "-c", "http.version=HTTP/1.1", "clone", "--filter=blob:none"]
         if sparse:
-            run(["git", "clone", "--filter=blob:none", "--sparse", url, str(repo_path)])
+            clone_command.append("--sparse")
+        clone_command.extend([url, str(repo_path)])
+        for attempt in range(1, 5):
+            try:
+                run(clone_command)
+                break
+            except subprocess.CalledProcessError:
+                if repo_path.exists() and not (repo_path / ".git").exists():
+                    shutil.rmtree(repo_path)
+                if attempt == 4:
+                    raise
+                info(f"clone failed; retrying ({attempt}/4)")
+                time.sleep(attempt * 2)
+        if sparse:
             run(["git", "sparse-checkout", "set", sparse], cwd=repo_path)
-            run(["git", "checkout", commit], cwd=repo_path)
-        else:
-            run(["git", "clone", url, str(repo_path)])
-            run(["git", "checkout", commit], cwd=repo_path)
+        run(["git", "checkout", commit], cwd=repo_path)
     else:
         info(f"{repo_path.relative_to(PROJECT_ROOT)} already exists, skipping clone")
 
@@ -143,6 +192,104 @@ def git_commit_data(repo_path: Path, paths: list, message: str) -> None:
         run(["git", "commit", "-m", message], cwd=repo_path, check=False)
 
 
+def file_md5(path: Path) -> str:
+    digest = hashlib.md5()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _download_with_resume(url: str, archive: Path) -> None:
+    """Download an archive with retry/resume support into the shared cache."""
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        "curl", "--location", "--fail", "--retry", "20", "--retry-all-errors",
+        "--retry-delay", "5", "--continue-at", "-", "--output", str(archive), url,
+    ]
+    run(command)
+
+
+def ensure_shared_cifar(kind: str) -> Path:
+    """Return a verified, extracted CIFAR tree on the external shared disk."""
+    if kind not in CIFAR_ARCHIVES:
+        raise ValueError(f"unknown CIFAR dataset: {kind}")
+    spec = CIFAR_ARCHIVES[kind]
+    cache = DATASETS_ROOT / "torchvision"
+    archive = cache / spec["filename"]
+    extracted = cache / spec["directory"]
+    required = [extracted / item for item in spec["required"]]
+    if all(path.is_file() for path in required):
+        info(f"shared {kind} dataset is complete, skipping")
+        return extracted
+
+    expected_md5 = spec["md5"]
+    if not archive.is_file() or file_md5(archive) != expected_md5:
+        url = os.environ.get(f"FML_{kind.upper()}_URL", spec["url"])
+        info(f"downloading {kind} once into shared dataset cache")
+        _download_with_resume(url, archive)
+    actual_md5 = file_md5(archive)
+    if actual_md5 != expected_md5:
+        raise RuntimeError(
+            f"integrity check failed for {archive}: expected md5={expected_md5}, got {actual_md5}"
+        )
+
+    if extracted.exists():
+        shutil.rmtree(extracted)
+    cache.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f".{kind}-extract-", dir=cache) as tmp:
+        run(["tar", "-xzf", str(archive), "-C", tmp])
+        candidate = Path(tmp) / spec["directory"]
+        candidate_required = [candidate / item for item in spec["required"]]
+        if not all(path.is_file() for path in candidate_required):
+            raise RuntimeError(f"extracted {kind} archive is incomplete: {candidate}")
+        shutil.move(str(candidate), str(extracted))
+    info(f"verified shared {kind}: {extracted}")
+    return extracted
+
+
+def link_shared_dataset(source: Path, destination: Path) -> None:
+    """Link a shared immutable dataset into a task template without copying it."""
+    source = source.resolve(strict=True)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.is_symlink():
+        if destination.resolve(strict=False) == source:
+            return
+        destination.unlink()
+    elif destination.exists():
+        # Preserve an already complete, task-local dataset from an older setup.
+        info(f"dataset already exists at {destination}, preserving it")
+        return
+    destination.symlink_to(source, target_is_directory=True)
+
+
+def link_shared_cifar(kind: str, task_data_root: Path) -> None:
+    """Link verified CIFAR data and discard any redundant task-local archive."""
+    spec = CIFAR_ARCHIVES[kind]
+    link_shared_dataset(
+        ensure_shared_cifar(kind), task_data_root / spec["directory"]
+    )
+    redundant_archive = task_data_root / spec["filename"]
+    if redundant_archive.is_file():
+        info(f"removing redundant task-local archive: {redundant_archive}")
+        redundant_archive.unlink()
+
+
+def replace_with_shared_file(source: Path, destination: Path) -> None:
+    """Replace a setup-managed generated file with a shared-cache symlink."""
+    source = source.resolve(strict=True)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.is_symlink():
+        if destination.resolve(strict=False) == source:
+            return
+        destination.unlink()
+    elif destination.exists():
+        if not destination.is_file():
+            raise RuntimeError(f"expected a generated file at {destination}")
+        destination.unlink()
+    destination.symlink_to(source)
+
+
 # ---------------------------------------------------------------------------
 # Task definitions
 # ---------------------------------------------------------------------------
@@ -156,13 +303,16 @@ def setup_generalization_domainbed(args):
     if args.skip_data:
         return
     template = WORKSPACE / "Generalization_domainbed"
-    if not (template / "data" / "MNIST" / "raw").exists():
+    shared_root = DATASETS_ROOT / "torchvision" / "mnist"
+    shared_mnist = shared_root / "MNIST"
+    if not (shared_mnist / "raw").exists():
         info("downloading MNIST for domainbed")
         conda_run("domainbed", f"""
 import torchvision
-torchvision.datasets.MNIST(root=r'{template/"data"}', train=True,  download=True)
-torchvision.datasets.MNIST(root=r'{template/"data"}', train=False, download=True)
+torchvision.datasets.MNIST(root=r'{shared_root}', train=True,  download=True)
+torchvision.datasets.MNIST(root=r'{shared_root}', train=False, download=True)
 """)
+    link_shared_dataset(shared_mnist, template / "data" / "MNIST")
 
 
 def setup_data_efficiency_easyfsl(args):
@@ -257,13 +407,26 @@ def setup_privacy_privacymeter(args):
                       "e384af8fd9319b8eeb1303aa82474df1441e3c59")
     if args.skip_data:
         return
-    pkl = repo / "data" / "cifar10.pkl"
-    if not pkl.exists():
-        info("downloading CIFAR-10 + generating pkl files for privacymeter")
+    shared_dir = DATASETS_ROOT / "privacymeter"
+    shared_dir.mkdir(parents=True, exist_ok=True)
+    shared_pkl = shared_dir / "cifar10.pkl"
+    shared_population = shared_dir / "cifar10_population.pkl"
+    local_pkl = repo / "data" / "cifar10.pkl"
+    local_population = repo / "data" / "cifar10_population.pkl"
+    # Migrate data generated by an older setup before linking the template.
+    if local_pkl.is_file() and not local_pkl.is_symlink() and not shared_pkl.exists():
+        shutil.move(str(local_pkl), str(shared_pkl))
+    if (local_population.is_file() and not local_population.is_symlink()
+            and not shared_population.exists()):
+        shutil.move(str(local_population), str(shared_population))
+    if not shared_pkl.exists() or not shared_population.exists():
+        info("linking shared CIFAR-10 + generating pkl files for privacymeter")
+        shared_cifar_root = shared_dir / "cifar10"
+        link_shared_cifar("cifar10", shared_cifar_root)
         conda_run("privacy_meter", f"""
 import os, pickle, torchvision
 from torchvision import transforms
-path = r'{repo / "data" / "cifar10"}'
+path = r'{shared_cifar_root}'
 os.makedirs(os.path.dirname(path), exist_ok=True)
 transform = transforms.Compose([
     transforms.ToTensor(),
@@ -276,7 +439,9 @@ with open(path + '.pkl', 'wb') as f:
 with open(path + '_population.pkl', 'wb') as f:
     pickle.dump(test_data, f)
 """)
-        git_commit_data(repo, ["data/"], "add cifar-10 dataset and pkl files for agent benchmark")
+    replace_with_shared_file(shared_pkl, local_pkl)
+    replace_with_shared_file(shared_population, local_population)
+    git_commit_data(repo, ["data/"], "link shared privacymeter data for agent benchmark")
 
 
 def setup_fairness_aif360(args):
@@ -314,16 +479,40 @@ def setup_generalization_officehome(args):
     if args.skip_data:
         return
     out = WORKSPACE / "Generalization_domainbed_officehome" / "data"
-    if not (out / "office_home").exists():
-        info("downloading OfficeHome dataset (~2.4GB)")
-        out.mkdir(parents=True, exist_ok=True)
-        run(["pip", "install", "gdown", "-q"], check=False)
-        run(["python", "-c",
-             "import gdown; gdown.download(id='1gkbf_KaxoBws-GWT3XIPZ7BnkqbAxIFa', "
-             "output='office_home.zip', quiet=False)"], cwd=out)
-        run(["unzip", "-q", "office_home.zip"], cwd=out)
-        run(["mv", "office_home_dg", "office_home"], cwd=out)
-        (out / "office_home.zip").unlink(missing_ok=True)
+    shared_parent = DATASETS_ROOT / "domainbed"
+    shared_officehome = shared_parent / "office_home"
+    legacy = out / "office_home"
+    if legacy.is_dir() and not legacy.is_symlink() and not shared_officehome.exists():
+        shared_parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(legacy), str(shared_officehome))
+    if not shared_officehome.exists():
+        info("downloading OfficeHome dataset (~135MB archive)")
+        shared_parent.mkdir(parents=True, exist_ok=True)
+        archive = shared_parent / "office_home.zip"
+        conda_run("domainbed", f"""
+import gdown, time
+for attempt in range(1, 6):
+    try:
+        result = gdown.download(
+            id='1gkbf_KaxoBws-GWT3XIPZ7BnkqbAxIFa',
+            output=r'{archive}', quiet=False, resume=True,
+        )
+        if result:
+            break
+    except Exception:
+        if attempt == 5:
+            raise
+        time.sleep(attempt * 5)
+else:
+    raise RuntimeError('OfficeHome download returned no output')
+""")
+        run(["unzip", "-q", str(archive), "-d", str(shared_parent)])
+        extracted = shared_parent / "office_home_dg"
+        if not extracted.is_dir():
+            raise RuntimeError(f"OfficeHome archive did not contain {extracted.name}")
+        extracted.rename(shared_officehome)
+        archive.unlink(missing_ok=True)
+    link_shared_dataset(shared_officehome, legacy)
 
 
 def setup_fairness_fairlearn(args):
@@ -359,14 +548,8 @@ def setup_continual_learning_pycil(args):
                       setup_files=[("ml_tasks/Continual_Learning_pycil/algorithm.py", "algorithm.py")])
     if args.skip_data:
         return
-    if not (repo / "data" / "cifar-100-python").exists():
-        info("downloading CIFAR-100 for pycil")
-        conda_run("pycil", f"""
-import torchvision
-torchvision.datasets.CIFAR100(root=r'{repo/"data"}', train=True,  download=True)
-torchvision.datasets.CIFAR100(root=r'{repo/"data"}', train=False, download=True)
-""")
-        git_commit_data(repo, ["data/"], "add cifar-100 dataset for agent benchmark")
+    link_shared_cifar("cifar100", repo / "data")
+    git_commit_data(repo, ["data/"], "link shared cifar-100 dataset for agent benchmark")
 
 
 def setup_privacy_opacus(args):
@@ -378,15 +561,8 @@ def setup_privacy_opacus(args):
                       ])
     if args.skip_data:
         return
-    if not (repo / "data" / "cifar-10-batches-py").exists():
-        info("downloading CIFAR-10 for opacus")
-        # cd to PROJECT_ROOT to avoid python importing the local opacus/ folder
-        conda_run("opacus", f"""
-import torchvision
-torchvision.datasets.CIFAR10(root=r'{repo/"data"}', train=True,  download=True)
-torchvision.datasets.CIFAR10(root=r'{repo/"data"}', train=False, download=True)
-""", cwd=PROJECT_ROOT)
-        git_commit_data(repo, ["data/"], "add cifar-10 dataset for agent benchmark")
+    link_shared_cifar("cifar10", repo / "data")
+    git_commit_data(repo, ["data/"], "link shared cifar-10 dataset for agent benchmark")
 
 
 def setup_data_efficiency_usb(args):
@@ -395,14 +571,8 @@ def setup_data_efficiency_usb(args):
                       setup_files=[("ml_tasks/Data_Efficiency_usb/algorithm.py", "algorithm.py")])
     if args.skip_data:
         return
-    if not (repo / "data" / "cifar-100-python").exists():
-        info("downloading CIFAR-100 for usb")
-        conda_run("usb", f"""
-import torchvision
-torchvision.datasets.CIFAR100(root=r'{repo/"data"}', train=True,  download=True)
-torchvision.datasets.CIFAR100(root=r'{repo/"data"}', train=False, download=True)
-""")
-        git_commit_data(repo, ["data/"], "add cifar-100 dataset for agent benchmark")
+    link_shared_cifar("cifar100", repo / "data")
+    git_commit_data(repo, ["data/"], "link shared cifar-100 dataset for agent benchmark")
 
 
 def setup_representation_learning_solo(args):
@@ -413,14 +583,8 @@ def setup_representation_learning_solo(args):
     git_commit_data(repo, ["algorithm.py", "split_config.json"], "setup for agent benchmark")
     if args.skip_data:
         return
-    if not (repo / "data" / "cifar-100-python").exists():
-        info("downloading CIFAR-100 for solo-learn")
-        conda_run("sololearn", f"""
-import torchvision
-torchvision.datasets.CIFAR100(root=r'{repo/"data"}', train=True,  download=True)
-torchvision.datasets.CIFAR100(root=r'{repo/"data"}', train=False, download=True)
-""")
-        git_commit_data(repo, ["data/"], "add cifar-100 dataset for agent benchmark")
+    link_shared_cifar("cifar100", repo / "data")
+    git_commit_data(repo, ["data/"], "link shared cifar-100 dataset for agent benchmark")
 
 
 def setup_robustness_openood(args):
@@ -432,19 +596,15 @@ def setup_robustness_openood(args):
                       ])
     if args.skip_data:
         return
-    needs = (not (repo / "data" / "cifar-10-batches-py").exists() or
-             not (repo / "data" / "cifar-100-python").exists() or
-             not (repo / "data" / "svhn").exists())
-    if needs:
-        info("downloading CIFAR-10/100 + SVHN for openood")
+    link_shared_cifar("cifar10", repo / "data")
+    link_shared_cifar("cifar100", repo / "data")
+    if not (repo / "data" / "svhn").exists():
+        info("downloading SVHN for openood")
         conda_run("openood", f"""
 import torchvision
-torchvision.datasets.CIFAR10(root=r'{repo/"data"}', train=True,  download=True)
-torchvision.datasets.CIFAR10(root=r'{repo/"data"}', train=False, download=True)
-torchvision.datasets.CIFAR100(root=r'{repo/"data"}', train=False, download=True)
 torchvision.datasets.SVHN(root=r'{repo/"data"/"svhn"}', split='test', download=True)
 """)
-        git_commit_data(repo, ["data/"], "add cifar-10/100 and svhn datasets for agent benchmark")
+    git_commit_data(repo, ["data/"], "link cifar datasets and add svhn for agent benchmark")
 
 
 def setup_federated_learning_pfllib(args):
@@ -489,10 +649,21 @@ def setup_conda_env_fmlbench():
 CONDA_ENVS = {
     "fmlbench": setup_conda_env_fmlbench,
     "domainbed": lambda: conda_create("domainbed", "3.10", [
-        "conda install mkl==2023.1.0 mkl-service==2.4.0 pytorch==1.12.1 torchvision==0.13.1 "
+        # Let the pinned PyTorch build choose a mutually compatible MKL stack.
+        # The former mkl=2023.1/mkl-service=2.4 pair is unsatisfiable on current
+        # conda-forge repodata for Python 3.10.
+        "conda install pytorch==1.12.1 torchvision==0.13.1 "
         "torchaudio==0.12.1 cudatoolkit=11.3 -c pytorch -y",
-        "pip install mkl-fft==1.3.11 mkl-random==1.2.8 backpack-for-pytorch==1.3.0 numpy==1.22.4 "
-        "wilds==2.0.0 tqdm==4.66.4 imageio==2.9.0 gdown==3.13.0 parameterized==0.9.0 "
+        # MKL 2024.1+ removed the iJIT symbol required by this legacy PyTorch
+        # wheel.  Pin the last compatible MKL release so importing torch does
+        # not fail with ``undefined symbol: iJIT_NotifyEvent``.
+        "conda install mkl==2024.0 -c conda-forge -y",
+        # PyPI rebuilt mkl-fft 1.3.11 and mkl-random 1.2.8 against NumPy
+        # >=1.26 long after this benchmark pinned NumPy 1.22.4. DomainBed does
+        # not import either package, and PyTorch already supplies the MKL
+        # runtime selected above, so do not install those incompatible extras.
+        "pip install backpack-for-pytorch==1.3.0 numpy==1.22.4 "
+        "wilds==2.0.0 tqdm==4.66.4 imageio==2.9.0 gdown==5.2.0 parameterized==0.9.0 "
         "Pillow==10.3.0 timm==0.9.16",
         "pip install weco==0.3.0",
         'pip install "setuptools<81"',
@@ -533,7 +704,9 @@ CONDA_ENVS = {
         'pip install "setuptools<81"',
     ]),
     "art": lambda: conda_create("art", "3.10", [
-        "pip install tensorflow-gpu==2.10.1",
+        # The tensorflow-gpu package is now a failing compatibility stub; the
+        # Linux tensorflow 2.10 wheel already includes GPU support.
+        "pip install tensorflow==2.10.1",
         "pip install numpy==1.23.5",
         "pip install matplotlib tqdm",
         'pip install "scipy>=1.4.1" scikit-learn==1.7.2',
@@ -552,7 +725,7 @@ CONDA_ENVS = {
         'conda install "numpy<2" scipy pandas scikit-learn==1.1.3 "matplotlib==3.8.4" tqdm seaborn -y',
         'pip install lightgbm==3.1.1 "igraph[plotting]==0.9.8"',
         "pip install lime adversarial-robustness-toolbox==1.13.0 BlackBoxAuditing "
-        "tensorflow-gpu==2.10.1 cvxpy==1.7.5 fairlearn==0.9.0 skorch==0.11.0 inFairness==0.2.3 "
+        "tensorflow==2.10.1 cvxpy==1.7.5 fairlearn==0.9.0 skorch==0.11.0 inFairness==0.2.3 "
         "pot==0.9 mlxtend colorama",
         'pip install "pytest>=3.5.0" "pytest-cov>=2.8.1"',
         "pip install weco==0.3.0",
@@ -648,6 +821,11 @@ def parse_args():
                    help="Set up only the given task(s). Repeatable. Default: all tasks.")
     p.add_argument("--list", action="store_true", help="List available tasks and exit.")
     p.add_argument("--skip-envs", action="store_true", help="Skip conda env creation.")
+    p.add_argument(
+        "--skip-harness-env",
+        action="store_true",
+        help="Do not create fmlbench. Use this for SSH runners when the harness and CodexCLI run on the controller.",
+    )
     p.add_argument("--skip-data", action="store_true",
                    help="Skip dataset downloads (clones repos and creates envs only).")
     p.add_argument("--skip-workspaces", action="store_true",
@@ -655,8 +833,13 @@ def parse_args():
     return p.parse_args()
 
 
-def check_prereqs():
-    missing = [c for c in ("conda", "git", "pip", "wget", "unzip", "curl") if not have_command(c)]
+def check_prereqs(args):
+    required = {"git"}
+    if not args.skip_envs:
+        required.update({"conda", "pip"})
+    if not args.skip_data:
+        required.update({"wget", "unzip", "curl"})
+    missing = [command for command in sorted(required) if not have_command(command)]
     if missing:
         die(f"missing required commands: {', '.join(missing)}")
     if not ML_TASKS.exists():
@@ -672,36 +855,56 @@ def main():
             print(f"  - {name}")
         return
 
-    check_prereqs()
+    check_prereqs(args)
 
     selected = args.task or list(TASKS.keys())
     unknown = [t for t in selected if t not in TASKS]
     if unknown:
         die(f"unknown task(s): {unknown}. Use --list to see available tasks.")
 
-    # Conda envs needed = harness env + envs of selected tasks
-    envs_needed = ["fmlbench"]
+    # Conda envs needed = optional local harness env + selected task envs.  The
+    # SSH execution architecture keeps the harness on the controller and only
+    # needs task environments on this runner.
+    envs_needed = [] if args.skip_harness_env else ["fmlbench"]
     for t in selected:
         for e in TASKS[t][1]:
             if e not in envs_needed:
                 envs_needed.append(e)
 
+    # Clone/pin repositories before environment installation.  Some task
+    # requirements files live inside those repositories (PrivacyMeter), while
+    # dataset preparation itself needs the environment, so setup is necessarily
+    # a three-stage operation on a clean runner.
+    if not args.skip_workspaces:
+        info("=" * 60)
+        info("Stage 1/3: Repository templates (datasets deferred)")
+        info("=" * 60)
+        clone_args = copy.copy(args)
+        clone_args.skip_data = True
+        for task in selected:
+            info(f"--- {task} ---")
+            TASKS[task][0](clone_args)
+    else:
+        info("Skipping repository templates (--skip-workspaces)")
+
     if not args.skip_envs:
         info("=" * 60)
-        info("Stage 1/2: Conda environments")
+        info("Stage 2/3: Conda environments")
         info("=" * 60)
         for env_name in envs_needed:
             CONDA_ENVS[env_name]()
     else:
         info("Skipping conda env creation (--skip-envs)")
 
-    if not args.skip_workspaces:
+    if not args.skip_workspaces and not args.skip_data:
         info("=" * 60)
-        info("Stage 2/2: Task workspaces" + (" (datasets skipped)" if args.skip_data else ""))
+        info("Stage 3/3: Dataset preparation")
         info("=" * 60)
         for t in selected:
             info(f"--- {t} ---")
             TASKS[t][0](args)
+    elif args.skip_data:
+        info("Skipping dataset preparation (--skip-data)")
     else:
         info("Skipping workspace setup (--skip-workspaces)")
 
@@ -709,11 +912,14 @@ def main():
     info("Setup complete.")
     info("=" * 60)
     info("Next:")
-    info("  conda activate fmlbench")
-    info("  python run_agent_benchmark.py "
-         "--agent-config configs/agents/ai_scientist_v2.yaml "
-         "--task-config configs/tasks/causality_causalml.yaml "
-         "--model gpt-5 --provider OpenAI")
+    if args.skip_harness_env or args.skip_envs:
+        info("  Run the benchmark from the controller with --eval-backend ssh.")
+    else:
+        info("  conda activate fmlbench")
+        info("  python run_agent_benchmark.py "
+             "--agent-config configs/agents/ai_scientist_v2.yaml "
+             "--task-config configs/tasks/causality_causalml.yaml "
+             "--model gpt-5 --provider OpenAI")
 
 
 if __name__ == "__main__":

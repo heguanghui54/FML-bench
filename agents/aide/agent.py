@@ -21,7 +21,7 @@ from typing import Dict, List, Literal, Optional
 
 from agents.base import AgentConfig, AgentResult, BaseAgent, StepResult
 from agents.code_editor import CodeEditor
-from benchmark.executor import BenchmarkExecutor
+from benchmark.executor_factory import make_executor
 from benchmark.utils import extract_primary_metric, get_filtered_results_for_prompt
 
 logger = logging.getLogger(__name__)
@@ -222,7 +222,7 @@ class AIDEAgent(BaseAgent):
         # Create main executor
         timeout = self.config.agent_params.get("execute_timeout", 2400)
         experiment_name = f"{experiment_timestamp}_aide_search"
-        self.executor = BenchmarkExecutor(
+        self.executor = make_executor(
             benchmark_config,
             agent_name,
             benchmark_name,
@@ -306,7 +306,7 @@ class AIDEAgent(BaseAgent):
 
         try:
             timeout = self.config.agent_params.get("execute_timeout", 2400)
-            self.executor = BenchmarkExecutor(
+            self.executor = make_executor(
                 benchmark_config,
                 agent_name,
                 benchmark_name,

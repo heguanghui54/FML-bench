@@ -5,11 +5,8 @@ import json
 import os
 import re
 
-import anthropic
 import backoff
 import openai
-import google.generativeai as genai
-from google.generativeai.types import GenerationConfig
 
 MAX_NUM_TOKENS = 8192
 
@@ -24,6 +21,7 @@ def experiment_seed() -> int:
 AVAILABLE_PROVIDERS = [
     "OpenRouter",
     "OpenAI",
+    "CodexCLI",
 ]
 
 AVAILABLE_LLMS = [
@@ -492,10 +490,16 @@ def extract_json_between_markers(llm_output):
 def create_client(model, provider='OpenAI'):
 
     # Check whether the provider is in the valid list
-    provider_list = ['OpenRouter', 'Anthropic', 'AnthropicBedrock', 'AnthropicVertex', 'OpenAI', 'DeepSeek', 'Google']
+    provider_list = ['OpenRouter', 'Anthropic', 'AnthropicBedrock', 'AnthropicVertex', 'OpenAI', 'DeepSeek', 'Google', 'CodexCLI']
     if provider not in provider_list:
-        raise ValueError(f"Provided {provider} not supported. Supported provides: 'OpenRouter', 'Anthropic', 'AnthropicBedrock', 'AnthropicVertex', 'OpenAI', 'DeepSeek', 'Google'")
+        raise ValueError(f"Provided {provider} not supported. Supported providers: {', '.join(provider_list)}")
 
+
+    if provider == 'CodexCLI':
+        from .codex_cli import CodexCLIClient
+
+        print(f"Using authenticated local Codex CLI with model {model}.")
+        return CodexCLIClient(), model
 
     if provider == 'OpenRouter':
         print(f"Using OpenRouter API with {model}.")
@@ -515,13 +519,19 @@ def create_client(model, provider='OpenAI'):
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
         ), model
     elif provider == 'Anthropic':
+        import anthropic
+
         print(f"Using Anthropic API with model {model}.")
         return anthropic.Anthropic(), model
     elif provider == 'AnthropicBedrock':
+        import anthropic
+
         client_model = model.split("/")[-1]
         print(f"Using Amazon Bedrock with model {client_model}.")
         return anthropic.AnthropicBedrock(), client_model
     elif provider == 'AnthropicVertex':
+        import anthropic
+
         client_model = model.split("/")[-1]
         print(f"Using Vertex AI with model {client_model}.")
         return anthropic.AnthropicVertex(), client_model

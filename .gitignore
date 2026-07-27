@@ -12,6 +12,7 @@ dist/
 # Environments
 .env
 .venv
+.controller-venv/
 venv/
 env/
 ENV/
@@ -37,6 +38,7 @@ pip-log.txt
 # Project-specific
 /benchmark_results/
 /artifacts/ml_scientist/
+/artifacts/codex_cli_smoke/
 /logs/
 /tmp/
 /data/

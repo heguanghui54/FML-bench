@@ -46,7 +46,7 @@ Examples:
     parser.add_argument("--model", type=str,
                         help="Model to use (e.g., gpt-5-2025-08-07, gemini-2.5-pro)")
     parser.add_argument("--provider", type=str,
-                        help="Provider to use (e.g., OpenAI, Google, OpenRouter)")
+                        help="Provider to use (e.g., CodexCLI, OpenAI, Google, OpenRouter)")
     parser.add_argument("--workspace-label", type=str, default=None,
                         help="Optional label for workspace copy. A unique ID is always appended.")
     parser.add_argument("--output-dir", type=str, default="benchmark_results",
@@ -61,6 +61,18 @@ Examples:
                              "plots) that scoring/analysis never reads; the agent's code "
                              "edits are already kept in step_snapshots/. Enable to "
                              "retain the full per-step workspace snapshot for debugging.")
+    parser.add_argument("--eval-backend", choices=["local", "ssh"], default=None,
+                        help="Where validation/test commands run. Defaults to "
+                             "FMLBENCH_EVAL_BACKEND, then local.")
+    parser.add_argument("--ssh-host", default=None,
+                        help="SSH host alias for --eval-backend ssh. Defaults to "
+                             "FML_SSH_HOST, then ubuntu-heshi.")
+    parser.add_argument("--remote-project-root", default=None,
+                        help="Prepared FML project root on the Ubuntu external disk. "
+                             "Defaults to FML_SSH_REMOTE_ROOT.")
+    parser.add_argument("--keep-remote-workspace", action="store_true", default=False,
+                        help="Retain the isolated Ubuntu run workspace for debugging. "
+                             "Off by default to control external-disk usage.")
     parser.add_argument("overrides", nargs="*",
                         help="Config overrides in format: key=value (e.g., agent.aide.num_drafts=3)")
     return parser.parse_args()
@@ -214,6 +226,14 @@ def save_results(result, config: Dict[str, Any], runner: BenchmarkRunner):
             "token_usage": result.token_usage,
             "parent_workspace": result.parent_workspace,
             "save_code_backup": runner.save_code_backup,
+            "execution_backend": {
+                "name": runner.eval_backend,
+                "ssh_host": runner.ssh_host if runner.eval_backend == "ssh" else None,
+                "remote_project_root": (
+                    runner.remote_project_root if runner.eval_backend == "ssh" else None
+                ),
+                "gpu_idle_gate": runner.require_gpu_idle,
+            },
             "metadata": result.metadata,
         }
         save_path = os.path.join(result.parent_workspace, "summary.json")
@@ -348,16 +368,33 @@ def main():
             sys.exit(1)
         raise
 
+    eval_backend = args.eval_backend or os.environ.get("FMLBENCH_EVAL_BACKEND", "local")
+    ssh_host = args.ssh_host or os.environ.get("FML_SSH_HOST", "ubuntu-heshi")
+    remote_project_root = args.remote_project_root or os.environ.get(
+        "FML_SSH_REMOTE_ROOT", "/media/heshi/game/fml-scientist/repo"
+    )
+    if agent_config.provider == "CodexCLI":
+        os.environ.setdefault(
+            "FML_CODEX_AUDIT_DIR",
+            os.path.abspath(os.path.join(args.output_dir, "codex_cli_audit")),
+        )
+
     print(f"Initializing {agent_type_str} agent...")
     agent.initialize()
 
     # Run benchmark
     print(f"\n=== Running {agent_type_str} on {benchmark_name} ===")
     print(f"Model: {agent_config.model} (Provider: {agent_config.provider})")
+    print(f"Evaluation backend: {eval_backend}")
 
     runner = BenchmarkRunner(benchmark_name, agent, workspace_label=args.workspace_label,
                               output_dir=args.output_dir,
-                              save_code_backup=args.save_code_backup)
+                              save_code_backup=args.save_code_backup,
+                              eval_backend=eval_backend,
+                              ssh_host=ssh_host,
+                              remote_project_root=remote_project_root,
+                              require_gpu_idle=True,
+                              keep_remote_workspace=args.keep_remote_workspace)
 
     # Register signal handlers to kill experiment subprocesses on external kill
     def _cleanup_on_signal(signum, frame):

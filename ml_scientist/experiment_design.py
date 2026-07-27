@@ -13,6 +13,7 @@ import os
 import platform
 import shlex
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -24,6 +25,7 @@ PROVIDER_KEYS = {
     "Google": "GOOGLE_API_KEY",
     "Anthropic": "ANTHROPIC_API_KEY",
     "OpenRouter": "OPENROUTER_API_KEY",
+    "CodexCLI": None,
 }
 
 # Diagnostic-only pilot: one published dense-opportunity/lower-is-better task
@@ -57,6 +59,9 @@ def _command(
     trial: int,
     seed: int,
     max_steps: int,
+    eval_backend: str,
+    ssh_host: str,
+    remote_project_root: str,
 ) -> str:
     label = f"{phase}-{agent['agent_id']}-{task['task_id']}-trial{trial:02d}"
     trial_output = f"{output_dir}/{phase}/trial_{trial:02d}"
@@ -77,8 +82,19 @@ def _command(
         label,
         "--output-dir",
         trial_output,
-        f"agent.{agent['agent_id']}.max_steps={max_steps}",
     ]
+    if eval_backend != "local":
+        args.extend(["--eval-backend", eval_backend])
+    if eval_backend == "ssh":
+        args.extend(
+            [
+                "--ssh-host",
+                ssh_host,
+                "--remote-project-root",
+                remote_project_root,
+            ]
+        )
+    args.append(f"agent.{agent['agent_id']}.max_steps={max_steps}")
     return shlex.join(args)
 
 
@@ -93,6 +109,9 @@ def _phase_rows(
     model: str,
     provider: str,
     output_dir: str,
+    eval_backend: str,
+    ssh_host: str,
+    remote_project_root: str,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for agent in agents:
@@ -126,6 +145,9 @@ def _phase_rows(
                             trial=trial,
                             seed=seed,
                             max_steps=max_steps,
+                            eval_backend=eval_backend,
+                            ssh_host=ssh_host,
+                            remote_project_root=remote_project_root,
                         ),
                     }
                 )
@@ -142,6 +164,9 @@ def build_experiment_protocol(
     pilot_steps: int = 15,
     confirmatory_steps: int = 100,
     include_full_extension: bool = False,
+    eval_backend: str = "local",
+    ssh_host: str = "ubuntu-heshi",
+    remote_project_root: str = "/media/heshi/game/fml-scientist/repo",
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Return a preregistration-style protocol and exact run matrix.
 
@@ -174,6 +199,9 @@ def build_experiment_protocol(
         model=model,
         provider=provider,
         output_dir=output_dir,
+        eval_backend=eval_backend,
+        ssh_host=ssh_host,
+        remote_project_root=remote_project_root,
     )
     rows += _phase_rows(
         phase="confirmatory_lite",
@@ -185,6 +213,9 @@ def build_experiment_protocol(
         model=model,
         provider=provider,
         output_dir=output_dir,
+        eval_backend=eval_backend,
+        ssh_host=ssh_host,
+        remote_project_root=remote_project_root,
     )
     if include_full_extension:
         rows += _phase_rows(
@@ -197,6 +228,9 @@ def build_experiment_protocol(
             model=model,
             provider=provider,
             output_dir=output_dir,
+            eval_backend=eval_backend,
+            ssh_host=ssh_host,
+            remote_project_root=remote_project_root,
         )
     counts: dict[str, int] = {}
     for row in rows:
@@ -223,6 +257,7 @@ def build_experiment_protocol(
             "provider": provider,
             "trial_seeds": list(trial_seeds),
             "confirmatory_max_steps": confirmatory_steps,
+            "execution_backend": eval_backend,
         },
         "controls": [
             "same model and provider for every arm",
@@ -235,6 +270,15 @@ def build_experiment_protocol(
         "execution_platform_contract": {
             "confirmatory_target": "Linux x86_64 with an NVIDIA GPU compatible with the task-pinned CUDA environments",
             "local_apple_silicon_role": "catalog, planning, orchestration, source audit, and report generation only",
+            "controller_model_condition": (
+                "Authenticated local Codex CLI in audited text-only mode; this is a new "
+                "experimental condition, not an exact reproduction of published FML API runs."
+                if provider == "CodexCLI"
+                else f"Provider API condition: {provider}."
+            ),
+            "evaluation_backend": eval_backend,
+            "ssh_host": ssh_host if eval_backend == "ssh" else None,
+            "remote_project_root": remote_project_root if eval_backend == "ssh" else None,
             "hardware_must_be_reported": ["host", "CPU", "GPU", "VRAM", "driver", "CUDA", "OS"],
         },
         "analysis_policy": {
@@ -267,49 +311,213 @@ def build_experiment_protocol(
     return protocol, rows
 
 
+def _codex_cli_status() -> dict[str, Any]:
+    executable = shutil.which("codex")
+    status = {"executable": executable, "version": None, "logged_in": False, "error": None}
+    if not executable:
+        status["error"] = "Codex CLI executable was not found."
+        return status
+    try:
+        version = subprocess.run(
+            [executable, "--version"], capture_output=True, text=True, timeout=30
+        )
+        login = subprocess.run(
+            [executable, "login", "status"], capture_output=True, text=True, timeout=30
+        )
+        status["version"] = version.stdout.strip()
+        login_text = (login.stdout + login.stderr).strip()
+        status["logged_in"] = login.returncode == 0 and "logged in" in login_text.lower()
+        if not status["logged_in"]:
+            status["error"] = "Codex CLI is not authenticated."
+    except (OSError, subprocess.SubprocessError) as exc:
+        status["error"] = str(exc)
+    return status
+
+
+def _ssh_runner_status(
+    catalog: dict[str, Any], *, ssh_host: str, remote_project_root: str
+) -> dict[str, Any]:
+    remote_base = str(Path(remote_project_root).parent)
+    task_names = [task["task_id"] for task in catalog["tasks"]]
+    env_by_task = {task["task_id"]: task["conda_env"] for task in catalog["tasks"]}
+    checks = "\n".join(
+        f"if test -d {shlex.quote(str(Path(remote_project_root) / 'workspace' / task))}; then echo task={shlex.quote(task)}; fi"
+        for task in task_names
+    )
+    env_checks = "\n".join(
+        f"if test -f {shlex.quote(str(Path(remote_base) / 'conda-envs' / env / '.fml_setup_complete'))}; then echo environment={shlex.quote(env)}; fi"
+        for env in sorted(set(env_by_task.values()))
+    )
+    script = f"""
+set -u
+printf 'platform='; . /etc/os-release; printf '%s %s|' "$NAME" "$VERSION_ID"; uname -m
+printf 'machine='; uname -m
+printf 'environment_manager='; if test -x {shlex.quote(str(Path(remote_base) / 'miniforge3/bin/conda'))}; then echo {shlex.quote(str(Path(remote_base) / 'miniforge3/bin/conda'))}; else echo; fi
+printf 'nvidia_smi='; command -v nvidia-smi || echo
+printf 'gpu='; nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader 2>/dev/null || true
+printf 'remote_project_root_exists='; test -d {shlex.quote(remote_project_root)} && echo yes || echo no
+{checks}
+{env_checks}
+exit 0
+"""
+    try:
+        result = subprocess.run(
+            [
+                "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+                ssh_host, "bash", "-s",
+            ],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {
+            "reachable": False,
+            "error": str(exc),
+            "workspace_tasks": {task: False for task in task_names},
+            "environment_tasks": {task: False for task in task_names},
+        }
+    values: dict[str, str] = {}
+    present_tasks = set()
+    present_environments = set()
+    for line in result.stdout.splitlines():
+        if line.startswith("task="):
+            present_tasks.add(line.split("=", 1)[1])
+        elif line.startswith("environment="):
+            present_environments.add(line.split("=", 1)[1])
+        elif "=" in line:
+            key, value = line.split("=", 1)
+            values[key] = value
+    return {
+        "reachable": result.returncode == 0,
+        "error": result.stderr.strip() or None,
+        "platform": values.get("platform"),
+        "machine": values.get("machine"),
+        "environment_manager": values.get("environment_manager") or None,
+        "nvidia_smi": values.get("nvidia_smi") or None,
+        "gpu": values.get("gpu") or None,
+        "remote_project_root_exists": values.get("remote_project_root_exists") == "yes",
+        "workspace_tasks": {task: task in present_tasks for task in task_names},
+        "environment_tasks": {
+            task: env_by_task[task] in present_environments for task in task_names
+        },
+    }
+
+
+def _local_environment_tasks(
+    catalog: dict[str, Any], env_tool: str | None
+) -> dict[str, bool]:
+    task_names = [task["task_id"] for task in catalog["tasks"]]
+    if env_tool is None:
+        return {task: False for task in task_names}
+    try:
+        result = subprocess.run(
+            [env_tool, "env", "list", "--json"], capture_output=True, text=True, timeout=30
+        )
+        prefixes = [Path(value) for value in json.loads(result.stdout).get("envs", [])]
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return {task: False for task in task_names}
+    completed = {
+        prefix.name for prefix in prefixes if (prefix / ".fml_setup_complete").is_file()
+    }
+    return {
+        task["task_id"]: task["conda_env"] in completed for task in catalog["tasks"]
+    }
+
+
 def preflight_environment(
-    catalog: dict[str, Any], *, provider: str, model: str, repo: Path
+    catalog: dict[str, Any], *, provider: str, model: str, repo: Path,
+    eval_backend: str = "local", ssh_host: str = "ubuntu-heshi",
+    remote_project_root: str = "/media/heshi/game/fml-scientist/repo",
 ) -> dict[str, Any]:
     """Inspect prerequisites without exposing secret values or modifying state."""
-    env_tool = next((name for name in ("conda", "mamba", "micromamba") if shutil.which(name)), None)
+    remote = None
+    if eval_backend == "ssh":
+        remote = _ssh_runner_status(
+            catalog, ssh_host=ssh_host, remote_project_root=remote_project_root
+        )
+        env_tool = remote.get("environment_manager")
+    else:
+        env_tool = next((name for name in ("conda", "mamba", "micromamba") if shutil.which(name)), None)
     required_key = PROVIDER_KEYS.get(provider)
-    key_present = bool(required_key and os.environ.get(required_key))
-    workspace_tasks = {
-        task["task_id"]: (repo / Path(task["repository"]).parts[0] / Path(task["repository"]).parts[1]).is_dir()
-        for task in catalog["tasks"]
-    }
+    codex_status = _codex_cli_status() if provider == "CodexCLI" else None
+    key_present = bool(os.environ.get(required_key)) if required_key else provider == "CodexCLI" and bool(codex_status and codex_status["logged_in"])
+    if remote is not None:
+        workspace_tasks = remote["workspace_tasks"]
+        environment_tasks = remote["environment_tasks"]
+    else:
+        workspace_tasks = {
+            task["task_id"]: (repo / Path(task["repository"]).parts[0] / Path(task["repository"]).parts[1]).is_dir()
+            for task in catalog["tasks"]
+        }
+        environment_tasks = _local_environment_tasks(catalog, env_tool)
+    lite_task_names = [task["task_id"] for task in catalog["tasks"] if task["lite"]]
+    lite_workspace_tasks = {task: workspace_tasks[task] for task in lite_task_names}
+    lite_environment_tasks = {task: environment_tasks[task] for task in lite_task_names}
+    full_workspace_ready = all(workspace_tasks.values())
+    lite_workspace_ready = all(lite_workspace_tasks.values())
+    full_environment_ready = all(environment_tasks.values())
+    lite_environment_ready = all(lite_environment_tasks.values())
     blockers = []
     if env_tool is None:
         blockers.append("No conda, mamba, or micromamba executable is available.")
-    if required_key is None:
+    if provider == "CodexCLI" and not key_present:
+        blockers.append("Codex CLI is not installed and authenticated on the controller.")
+    elif provider not in PROVIDER_KEYS:
         blockers.append(f"Unknown provider {provider!r}; provider key requirement cannot be verified.")
-    elif not key_present:
+    elif required_key and not key_present:
         blockers.append(f"{required_key} is not configured in this process environment.")
     if model == "SET_MODEL":
         blockers.append("The experiment model is still the SET_MODEL placeholder.")
     system = platform.system()
-    machine = platform.machine()
-    gpu_tool = shutil.which("nvidia-smi")
-    if system != "Linux" or machine not in {"x86_64", "amd64"} or gpu_tool is None:
+    machine = remote.get("machine") if remote else platform.machine()
+    gpu_tool = remote.get("nvidia_smi") if remote else shutil.which("nvidia-smi")
+    platform_ok = (
+        bool(remote and remote.get("reachable") and machine in {"x86_64", "amd64"} and gpu_tool)
+        if eval_backend == "ssh"
+        else system == "Linux" and machine in {"x86_64", "amd64"} and gpu_tool is not None
+    )
+    if not platform_ok:
         blockers.append(
             "The confirmatory suite requires a Linux x86_64 NVIDIA runner for the checked-in CUDA-pinned task environments."
         )
-    if not all(workspace_tasks.values()):
-        blockers.append("One or more task workspaces have not been bootstrapped by setup.py.")
+    if not lite_workspace_ready:
+        blockers.append("One or more FML-Lite task workspaces have not been bootstrapped by setup.py.")
+    if not lite_environment_ready:
+        blockers.append("One or more FML-Lite conda environments are missing a completed setup marker.")
     return {
-        "schema_version": "fml-scientist-preflight-v1",
+        "schema_version": "fml-scientist-preflight-v2",
         "ready": not blockers,
-        "platform": platform.platform(),
-        "machine": platform.machine(),
+        "ready_for_confirmatory_lite": not blockers,
+        "ready_for_full_extension": not blockers and full_workspace_ready and full_environment_ready,
+        "platform": remote.get("platform") if remote else platform.platform(),
+        "machine": machine,
         "nvidia_smi": gpu_tool,
         "environment_manager": env_tool,
         "provider": provider,
         "model": model,
         "required_key_name": required_key,
         "required_key_present": key_present,
+        "provider_auth": codex_status if codex_status is not None else {"required_key_name": required_key, "present": key_present},
+        "eval_backend": eval_backend,
+        "ssh_host": ssh_host if eval_backend == "ssh" else None,
+        "remote_project_root": remote_project_root if eval_backend == "ssh" else None,
+        "remote_runner": remote,
         "workspace_task_count": sum(workspace_tasks.values()),
         "workspace_task_total": len(workspace_tasks),
         "workspace_tasks": workspace_tasks,
+        "lite_workspace_task_count": sum(lite_workspace_tasks.values()),
+        "lite_workspace_task_total": len(lite_workspace_tasks),
+        "lite_workspace_tasks": lite_workspace_tasks,
+        "full_workspace_ready": full_workspace_ready,
+        "environment_task_count": sum(environment_tasks.values()),
+        "environment_task_total": len(environment_tasks),
+        "environment_tasks": environment_tasks,
+        "lite_environment_task_count": sum(lite_environment_tasks.values()),
+        "lite_environment_task_total": len(lite_environment_tasks),
+        "lite_environment_tasks": lite_environment_tasks,
+        "full_environment_ready": full_environment_ready,
         "blockers": blockers,
     }
 
@@ -322,6 +530,9 @@ def write_experiment_protocol(
     provider: str = "OpenAI",
     output_dir: str = "benchmark_results/controlled",
     include_full_extension: bool = False,
+    eval_backend: str = "local",
+    ssh_host: str = "ubuntu-heshi",
+    remote_project_root: str = "/media/heshi/game/fml-scientist/repo",
 ) -> dict[str, Any]:
     protocol, rows = build_experiment_protocol(
         catalog,
@@ -329,6 +540,9 @@ def write_experiment_protocol(
         provider=provider,
         output_dir=output_dir,
         include_full_extension=include_full_extension,
+        eval_backend=eval_backend,
+        ssh_host=ssh_host,
+        remote_project_root=remote_project_root,
     )
     _write_json(out_dir / "experiment_protocol.json", protocol)
     _write_csv(
