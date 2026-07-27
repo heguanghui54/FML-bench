@@ -326,7 +326,14 @@ def build_experiment_protocol(
         "resource_budget_amendment": {
             "condition_label": "budget_limited_codexcli_ssh",
             "status": "frozen before any formal pilot run; based only on non-claim engineering calibration runtime",
-            "engineering_evidence": "A non-claim calibration on Privacy_privacymeter showed that one native validation trains four models for 50 epochs each and requires approximately 30 minutes on the RTX 3060 Ti.",
+            "engineering_evidence": "A non-claim calibration on Privacy_privacymeter showed that one native validation trains four models for 50 epochs each and required 1918.81 seconds (31 minutes 58.81 seconds) on the RTX 3060 Ti.",
+            "privacy_meter_compute_forecast": {
+                "validation_runtime_seconds": 1918.81,
+                "validations_per_run": "max_steps + one protected-test checkpoint-regeneration validation",
+                "pilot_validation_gpu_hours": 7.46,
+                "confirmatory_validation_gpu_hours": 44.77,
+                "scope": "PrivacyMeter validation only; excludes controller, workspace, post-processing, and protected-test overhead",
+            },
             "calibration_outcome_quarantine": "Calibration validation/test scores are excluded from pilot, confirmatory, model selection, task selection, and paper claims.",
             "pilot_steps": pilot_steps,
             "confirmatory_steps": confirmatory_steps,

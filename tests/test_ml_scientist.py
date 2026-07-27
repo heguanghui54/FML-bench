@@ -520,6 +520,10 @@ class ExperimentDesignTests(unittest.TestCase):
         self.assertEqual({row["max_steps"] for row in rows if row["phase"] == "pilot"}, {1})
         self.assertEqual({row["max_steps"] for row in rows if row["phase"] == "confirmatory_lite"}, {3})
         self.assertIn("cannot activate", protocol["resource_budget_amendment"]["adaptive_search_limitation"])
+        forecast = protocol["resource_budget_amendment"]["privacy_meter_compute_forecast"]
+        self.assertEqual(forecast["validation_runtime_seconds"], 1918.81)
+        self.assertEqual(forecast["pilot_validation_gpu_hours"], 7.46)
+        self.assertEqual(forecast["confirmatory_validation_gpu_hours"], 44.77)
         confirmatory = [row for row in rows if row["phase"] == "confirmatory_lite"]
         self.assertEqual(len({(row["agent"], row["task"], row["trial"]) for row in confirmatory}), 168)
         self.assertTrue(all("--seed" in row["command"] for row in rows))
