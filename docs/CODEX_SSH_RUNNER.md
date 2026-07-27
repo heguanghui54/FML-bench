@@ -120,6 +120,15 @@ Run the full readiness check before a campaign:
   --remote-project-root /media/heshi/game/fml-scientist/repo
 ```
 
+The checked-in CodexCLI/SSH condition is intentionally resource limited. Its
+diagnostic pilot uses one agent step and its balanced confirmatory matrix uses
+three steps for every agent-task-seed run (7 agents x 8 Lite tasks x 3 seeds).
+This preserves task code, metrics, seeds, and the protected-test boundary while
+making the campaign executable on one RTX 3060 Ti. It estimates early-search
+performance, not the published 100-step condition. AdaptiveSearch's 50-step
+phase transition cannot fire in this matrix, so a branching advantage must not
+be claimed from these results.
+
 If i4h is using the GPU through the paper-extension transient service, pause
 the owning unit (stopping only its child container lets the service continue):
 

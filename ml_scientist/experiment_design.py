@@ -142,6 +142,12 @@ def _phase_rows(
                         "provider": provider,
                         "max_steps": max_steps,
                         "protected_test_max_runs": 1,
+                        "paper_claim_eligible": phase.startswith("confirmatory_"),
+                        "evidence_class": (
+                            "confirmatory_new_evidence"
+                            if phase.startswith("confirmatory_")
+                            else "diagnostic_pilot"
+                        ),
                         "status": "PLANNED",
                         "result_root": f"{output_dir}/{phase}/trial_{trial:02d}",
                         "command": _command(
@@ -170,8 +176,8 @@ def build_experiment_protocol(
     provider: str = "OpenAI",
     output_dir: str = "benchmark_results/controlled",
     trial_seeds: tuple[int, ...] = DEFAULT_TRIAL_SEEDS,
-    pilot_steps: int = 15,
-    confirmatory_steps: int = 100,
+    pilot_steps: int = 1,
+    confirmatory_steps: int = 3,
     include_full_extension: bool = False,
     eval_backend: str = "local",
     ssh_host: str = "ubuntu-heshi",
@@ -187,6 +193,8 @@ def build_experiment_protocol(
         raise ValueError("At least two independent trials are required")
     if len(set(trial_seeds)) != len(trial_seeds):
         raise ValueError("Trial seeds must be unique")
+    if pilot_steps < 1 or confirmatory_steps < 1:
+        raise ValueError("Pilot and confirmatory step budgets must both be positive")
     agents = list(catalog["agents"])
     tasks = list(catalog["tasks"])
     task_by_id = {task["task_id"]: task for task in tasks}
@@ -248,7 +256,7 @@ def build_experiment_protocol(
         agent["parameters"] for agent in agents if agent["agent_id"] == "adaptivesearch"
     )
     protocol = {
-        "schema_version": "fml-scientist-experiment-protocol-v1",
+        "schema_version": "fml-scientist-experiment-protocol-v2",
         "catalog_commit": catalog["repository_commit"],
         "status": "TEMPLATE" if model == "SET_MODEL" else "FROZEN_READY_FOR_PREFLIGHT",
         "research_questions": [
@@ -256,7 +264,7 @@ def build_experiment_protocol(
             "Which exploration dynamics predict reliability, efficiency, and validation-to-test generalization?",
             "When does regime-adaptive search outperform fixed greedy, tree, MCTS, and evolutionary strategies?",
         ],
-        "primary_estimand": "Mean FML normalized improvement on the confirmatory suite.",
+        "primary_estimand": f"Mean FML normalized improvement under a matched {confirmatory_steps}-step early-search budget on the confirmatory suite.",
         "secondary_estimands": [
             "Per-task canonical protected-test metric",
             "Twelve FML process-level metrics",
@@ -286,6 +294,23 @@ def build_experiment_protocol(
             "validation is the only search feedback",
             "candidate is frozen before one protected-test execution",
         ],
+        "resource_budget_amendment": {
+            "condition_label": "budget_limited_codexcli_ssh",
+            "status": "frozen before any formal pilot run; based only on non-claim engineering calibration runtime",
+            "engineering_evidence": "A non-claim calibration on Privacy_privacymeter showed that one native validation trains four models for 50 epochs each and requires approximately 30 minutes on the RTX 3060 Ti.",
+            "calibration_outcome_quarantine": "Calibration validation/test scores are excluded from pilot, confirmatory, model selection, task selection, and paper claims.",
+            "pilot_steps": pilot_steps,
+            "confirmatory_steps": confirmatory_steps,
+            "unchanged_factors": [
+                "all seven agents",
+                "all eight FML-Lite tasks",
+                "three frozen seeds",
+                "native datasets and metric directions",
+                "one-way protected-test boundary",
+            ],
+            "claim_scope": "early-search proposal and selection performance, not reproduction of the published 100-step condition",
+            "adaptive_search_limitation": "AdaptiveSearch uses a 50-step Phase-1 window, so its adaptive branching cannot activate in this primary matrix; no adaptive-branching advantage may be claimed from these runs.",
+        },
         "execution_platform_contract": {
             "confirmatory_target": "Linux x86_64 with an NVIDIA GPU compatible with the task-pinned CUDA environments",
             "local_apple_silicon_role": "catalog, planning, orchestration, source audit, and report generation only",
@@ -656,6 +681,8 @@ def write_experiment_protocol(
     provider: str = "OpenAI",
     output_dir: str = "benchmark_results/controlled",
     include_full_extension: bool = False,
+    pilot_steps: int = 1,
+    confirmatory_steps: int = 3,
     eval_backend: str = "local",
     ssh_host: str = "ubuntu-heshi",
     remote_project_root: str = "/media/heshi/game/fml-scientist/repo",
@@ -665,6 +692,8 @@ def write_experiment_protocol(
         model=model,
         provider=provider,
         output_dir=output_dir,
+        pilot_steps=pilot_steps,
+        confirmatory_steps=confirmatory_steps,
         include_full_extension=include_full_extension,
         eval_backend=eval_backend,
         ssh_host=ssh_host,
@@ -688,6 +717,8 @@ def write_experiment_protocol(
             "provider",
             "max_steps",
             "protected_test_max_runs",
+            "paper_claim_eligible",
+            "evidence_class",
             "status",
             "result_root",
             "command",

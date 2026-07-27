@@ -42,6 +42,8 @@ def parse_args() -> argparse.Namespace:
     protocol.add_argument("--model", default="SET_MODEL")
     protocol.add_argument("--provider", default="OpenAI")
     protocol.add_argument("--results", default="benchmark_results/controlled")
+    protocol.add_argument("--pilot-steps", type=int, default=1)
+    protocol.add_argument("--confirmatory-steps", type=int, default=3)
     protocol.add_argument("--full-extension", action="store_true")
     protocol.add_argument("--eval-backend", choices=["local", "ssh"], default="local")
     protocol.add_argument("--ssh-host", default="ubuntu-heshi")
@@ -77,6 +79,8 @@ def parse_args() -> argparse.Namespace:
     bootstrap.add_argument("--out", type=Path, required=True)
     bootstrap.add_argument("--results", type=Path, default=Path("benchmark_results"))
     bootstrap.add_argument("--metric-reports", type=Path, default=Path("metric_reports"))
+    bootstrap.add_argument("--pilot-steps", type=int, default=1)
+    bootstrap.add_argument("--confirmatory-steps", type=int, default=3)
     bootstrap.add_argument("--model", default="SET_MODEL")
     bootstrap.add_argument("--provider", default="OpenAI")
     bootstrap.add_argument("--eval-backend", choices=["local", "ssh"], default="local")
@@ -106,6 +110,8 @@ def main() -> None:
             model=args.model,
             provider=args.provider,
             output_dir=args.results,
+            pilot_steps=args.pilot_steps,
+            confirmatory_steps=args.confirmatory_steps,
             include_full_extension=args.full_extension,
             eval_backend=args.eval_backend,
             ssh_host=args.ssh_host,
@@ -166,6 +172,8 @@ def main() -> None:
             args.out / "protocol",
             model=args.model,
             provider=args.provider,
+            pilot_steps=args.pilot_steps,
+            confirmatory_steps=args.confirmatory_steps,
             eval_backend=args.eval_backend,
             ssh_host=args.ssh_host,
             remote_project_root=args.remote_project_root,

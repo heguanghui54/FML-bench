@@ -517,15 +517,22 @@ class ExperimentDesignTests(unittest.TestCase):
         self.assertEqual(protocol["phase_run_counts"]["pilot"], 14)
         self.assertEqual(protocol["phase_run_counts"]["confirmatory_lite"], 168)
         self.assertEqual(protocol["total_planned_runs"], 182)
+        self.assertEqual({row["max_steps"] for row in rows if row["phase"] == "pilot"}, {1})
+        self.assertEqual({row["max_steps"] for row in rows if row["phase"] == "confirmatory_lite"}, {3})
+        self.assertIn("cannot activate", protocol["resource_budget_amendment"]["adaptive_search_limitation"])
         confirmatory = [row for row in rows if row["phase"] == "confirmatory_lite"]
         self.assertEqual(len({(row["agent"], row["task"], row["trial"]) for row in confirmatory}), 168)
         self.assertTrue(all("--seed" in row["command"] for row in rows))
         self.assertTrue(all(f"trial_{row['trial']:02d}" in row["result_root"] for row in rows))
         pilot_tasks = {row["task"] for row in rows if row["phase"] == "pilot"}
         self.assertEqual(pilot_tasks, {"Privacy_privacymeter", "Generalization_domainbed"})
+        self.assertTrue(all(not row["paper_claim_eligible"] for row in rows if row["phase"] == "pilot"))
+        self.assertTrue(all(row["paper_claim_eligible"] for row in confirmatory))
         self.assertIn("anti_cherry_pick_rule", protocol["pilot_selection_basis"])
         self.assertIn("matched seed block", protocol["analysis_policy"]["primary_uncertainty_unit"])
         self.assertIn("Holm", protocol["analysis_policy"]["multiplicity"])
+        with self.assertRaises(ValueError):
+            build_experiment_protocol(self.catalog, model="fixed-model", pilot_steps=0)
 
     def test_codex_cli_ssh_condition_is_explicit_in_every_run(self):
         protocol, rows = build_experiment_protocol(
