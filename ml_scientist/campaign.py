@@ -115,7 +115,9 @@ def _write_campaign_state(
             and all(event["status"] in {"COMPLETE", "SKIPPED_ALREADY_COMPLETE"} for event in outcomes)
         ),
     }
-    path.write_text(json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    temporary_path = path.with_suffix(path.suffix + ".tmp")
+    temporary_path.write_text(json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    temporary_path.replace(path)
     return state
 
 
