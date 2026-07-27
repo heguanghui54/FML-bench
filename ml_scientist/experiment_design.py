@@ -38,6 +38,7 @@ PROVIDER_KEYS = {
 # have relatively high across-agent discrimination in the published aggregates.
 PILOT_TASKS = ("Privacy_privacymeter", "Generalization_domainbed")
 DEFAULT_TRIAL_SEEDS = (1103, 2207, 3301)
+EXECUTION_ORDER_SEED = 20260727
 ADAPTIVESEARCH_CONTROLLER_PACKAGES = {
     "torch": "2.10.0",
     "transformers": "5.3.0",
@@ -169,6 +170,33 @@ def _phase_rows(
     return rows
 
 
+def _freeze_execution_order(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Block by phase/task/trial and deterministically randomize agent order."""
+    phase_rank = {"pilot": 0, "confirmatory_lite": 1, "confirmatory_full": 2}
+    ordered: list[dict[str, Any]] = []
+    block_keys = sorted(
+        {(row["phase"], row["task"], int(row["trial"])) for row in rows},
+        key=lambda key: (phase_rank.get(key[0], 99), key[2], key[1]),
+    )
+    for phase, task, trial in block_keys:
+        block = [
+            row for row in rows
+            if row["phase"] == phase and row["task"] == task and int(row["trial"]) == trial
+        ]
+        block.sort(
+            key=lambda row: hashlib.sha256(
+                f"{EXECUTION_ORDER_SEED}|{phase}|{task}|{trial}|{row['agent']}".encode()
+            ).hexdigest()
+        )
+        block_id = f"{phase}|{task}|trial{trial:02d}"
+        for row in block:
+            row["randomization_block"] = block_id
+            ordered.append(row)
+    for index, row in enumerate(ordered, start=1):
+        row["execution_order"] = index
+    return ordered
+
+
 def build_experiment_protocol(
     catalog: dict[str, Any],
     *,
@@ -249,6 +277,7 @@ def build_experiment_protocol(
             ssh_host=ssh_host,
             remote_project_root=remote_project_root,
         )
+    rows = _freeze_execution_order(rows)
     counts: dict[str, int] = {}
     for row in rows:
         counts[row["phase"]] = counts.get(row["phase"], 0) + 1
@@ -336,6 +365,12 @@ def build_experiment_protocol(
             "task_heterogeneity": "report per-task paired effects and task/task-seed win-tie-loss rates as secondary descriptive analyses",
             "small_n_warning": "three seeds have weak inferential resolution; lead with estimates and intervals and do not infer equivalence from a non-significant result",
             "selection": "no arm, task, metric, or trial removal after protected-test exposure",
+            "execution_order": {
+                "blocking": "phase x task x trial",
+                "within_block": "agents ordered by SHA-256 of the frozen order seed and block identifiers",
+                "order_seed": EXECUTION_ORDER_SEED,
+                "purpose": "reduce agent-time confounding on the single-GPU runner while preserving exact reproducibility",
+            },
         },
         "pilot_selection_basis": {
             "status": "published-prior-informed diagnostic selection; ineligible for primary claims",
@@ -719,6 +754,8 @@ def write_experiment_protocol(
             "protected_test_max_runs",
             "paper_claim_eligible",
             "evidence_class",
+            "randomization_block",
+            "execution_order",
             "status",
             "result_root",
             "command",
