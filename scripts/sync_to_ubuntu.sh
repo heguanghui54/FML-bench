@@ -18,6 +18,9 @@ ssh -o BatchMode=yes -o ConnectTimeout=8 "$ssh_host" \
   "mkdir -p $(printf '%q' "$remote_root")"
 rsync -a \
   --exclude='.DS_Store' \
+  --exclude='.cache/' \
+  --exclude='.controller-venv/' \
+  --exclude='.venv/' \
   --exclude='__pycache__/' \
   --exclude='artifacts/' \
   --exclude='benchmark_results/' \
