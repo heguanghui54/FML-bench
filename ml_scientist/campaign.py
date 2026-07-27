@@ -79,6 +79,46 @@ def _command_argv(command: str) -> list[str]:
     return argv
 
 
+def _append_event(path: Path, event: dict[str, Any]) -> None:
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
+def _write_campaign_state(
+    *,
+    path: Path,
+    matrix_path: Path,
+    selected_run_count: int,
+    outcomes: list[dict[str, Any]],
+    dry_run: bool,
+    events_path: Path,
+    current_run_id: str | None,
+) -> dict[str, Any]:
+    counts: dict[str, int] = {}
+    for event in outcomes:
+        counts[event["status"]] = counts.get(event["status"], 0) + 1
+    processed = len(outcomes)
+    state = {
+        "schema_version": "fml-scientist-campaign-state-v1",
+        "matrix_path": str(matrix_path.resolve()),
+        "matrix_sha256": hashlib.sha256(matrix_path.read_bytes()).hexdigest(),
+        "selected_run_count": selected_run_count,
+        "processed_run_count": processed,
+        "remaining_run_count": selected_run_count - processed,
+        "current_run_id": current_run_id,
+        "status_counts": counts,
+        "dry_run": dry_run,
+        "event_ledger": str(events_path.resolve()),
+        "complete": (
+            bool(selected_run_count)
+            and processed == selected_run_count
+            and all(event["status"] in {"COMPLETE", "SKIPPED_ALREADY_COMPLETE"} for event in outcomes)
+        ),
+    }
+    path.write_text(json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return state
+
+
 def run_campaign(
     *,
     matrix_path: Path,
@@ -101,7 +141,17 @@ def run_campaign(
         rows = rows[:max_runs]
     log_dir.mkdir(parents=True, exist_ok=True)
     events_path = log_dir / "campaign_events.jsonl"
+    state_path = log_dir / "campaign_state.json"
     outcomes: list[dict[str, Any]] = []
+    state = _write_campaign_state(
+        path=state_path,
+        matrix_path=matrix_path,
+        selected_run_count=len(rows),
+        outcomes=outcomes,
+        dry_run=dry_run,
+        events_path=events_path,
+        current_run_id=None,
+    )
     for row in rows:
         before = _summary_paths(repo, row)
         matching_before = _matching_summaries(before, row)
@@ -128,6 +178,16 @@ def run_campaign(
         elif dry_run:
             event.update({"status": "DRY_RUN_READY", "summary_paths": []})
         else:
+            _append_event(events_path, {**event, "status": "STARTED", "summary_paths": []})
+            _write_campaign_state(
+                path=state_path,
+                matrix_path=matrix_path,
+                selected_run_count=len(rows),
+                outcomes=outcomes,
+                dry_run=dry_run,
+                events_path=events_path,
+                current_run_id=row["run_id"],
+            )
             log_path = log_dir / f"{row['run_id']}.log"
             with log_path.open("w", encoding="utf-8") as log_handle:
                 completed = subprocess.run(
@@ -150,22 +210,15 @@ def run_campaign(
                 }
             )
         event["finished_at"] = _now()
-        with events_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+        _append_event(events_path, event)
         outcomes.append(event)
-    counts: dict[str, int] = {}
-    for event in outcomes:
-        counts[event["status"]] = counts.get(event["status"], 0) + 1
-    state = {
-        "schema_version": "fml-scientist-campaign-state-v1",
-        "matrix_path": str(matrix_path.resolve()),
-        "matrix_sha256": hashlib.sha256(matrix_path.read_bytes()).hexdigest(),
-        "selected_run_count": len(rows),
-        "status_counts": counts,
-        "dry_run": dry_run,
-        "event_ledger": str(events_path.resolve()),
-        "complete": bool(rows) and all(event["status"] in {"COMPLETE", "SKIPPED_ALREADY_COMPLETE"} for event in outcomes),
-    }
-    state_path = log_dir / "campaign_state.json"
-    state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        state = _write_campaign_state(
+            path=state_path,
+            matrix_path=matrix_path,
+            selected_run_count=len(rows),
+            outcomes=outcomes,
+            dry_run=dry_run,
+            events_path=events_path,
+            current_run_id=None,
+        )
     return state

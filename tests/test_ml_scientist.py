@@ -5,6 +5,7 @@ import unittest
 import csv
 import hashlib
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -593,6 +594,9 @@ class ExperimentDesignTests(unittest.TestCase):
                 dry_run=True,
             )
             self.assertEqual(state["selected_run_count"], 2)
+            self.assertEqual(state["processed_run_count"], 2)
+            self.assertEqual(state["remaining_run_count"], 0)
+            self.assertIsNone(state["current_run_id"])
             self.assertEqual(state["status_counts"], {"DRY_RUN_READY": 2})
             self.assertFalse(state["complete"])
 
@@ -600,6 +604,48 @@ class ExperimentDesignTests(unittest.TestCase):
         argv = _command_argv("python run_agent_benchmark.py --model fixed")
         self.assertEqual(argv[0], sys.executable)
         self.assertEqual(argv[1:], ["run_agent_benchmark.py", "--model", "fixed"])
+
+    def test_campaign_records_started_event_and_live_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result_root = "results/pilot/trial_01"
+            summary = Path(result_root) / "demo_agent" / "demo_task" / "run" / "summary.json"
+            payload = {
+                "agent": "demo_agent",
+                "benchmark": "demo_task",
+                "model": "fixed-model",
+                "provider": "CodexCLI",
+                "experimental_seed": 1103,
+            }
+            code = (
+                "import json; from pathlib import Path; "
+                f"p=Path({str(summary)!r}); p.parent.mkdir(parents=True, exist_ok=True); "
+                f"p.write_text(json.dumps({payload!r}))"
+            )
+            row = {
+                "run_id": "pilot-demo",
+                "phase": "pilot",
+                "agent": "demo_agent",
+                "task": "demo_task",
+                "trial": "1",
+                "seed": "1103",
+                "model": "fixed-model",
+                "provider": "CodexCLI",
+                "result_root": result_root,
+                "command": f"python -c {shlex.quote(code)}",
+            }
+            matrix = root / "matrix.csv"
+            with matrix.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=list(row))
+                writer.writeheader()
+                writer.writerow(row)
+            state = run_campaign(matrix_path=matrix, repo=root, log_dir=root / "logs")
+            events = [json.loads(line) for line in (root / "logs" / "campaign_events.jsonl").read_text().splitlines()]
+            self.assertEqual([event["status"] for event in events], ["STARTED", "COMPLETE"])
+            self.assertEqual(state["processed_run_count"], 1)
+            self.assertEqual(state["remaining_run_count"], 0)
+            self.assertIsNone(state["current_run_id"])
+            self.assertTrue(state["complete"])
 
 
 class SkillGovernanceTests(unittest.TestCase):
