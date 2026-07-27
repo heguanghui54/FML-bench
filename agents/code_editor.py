@@ -317,7 +317,11 @@ class CodeEditor:
             if not is_safe:
                 logger.warning("BLOCKED: Dangerous code in %s: %s", resolved, violations)
                 continue
-            Path(resolved).write_text(code)
+            original = original_targets[resolved]
+            if code.rstrip("\r\n") == original.rstrip("\r\n"):
+                continue
+            write_code = code + ("\n" if original.endswith(("\n", "\r")) else "")
+            Path(resolved).write_text(write_code)
             if resolved not in modified:
                 modified.append(resolved)
 
@@ -345,6 +349,8 @@ class CodeEditor:
                     "BLOCKED: Dangerous code in REPLACE block for %s: %s", resolved, violations
                 )
                 continue
+            if new_content == content:
+                continue
             Path(resolved).write_text(new_content)
             if resolved not in modified:
                 modified.append(resolved)
@@ -364,10 +370,10 @@ class CodeEditor:
         Returns:
             List of (filepath, code) tuples.
         """
-        pattern = r"### FILE:\s*(\S+)\s*\n```(?:python)?\s*\n(.*?)```"
+        pattern = r"### FILE:[ \t]*([^\r\n]+?)[ \t]*\r?\n```(?:python)?[ \t]*\r?\n(.*?)```"
         matches = re.findall(pattern, response, re.DOTALL)
         # Strip trailing whitespace/newlines from extracted code
-        return [(filepath, code.rstrip("\n")) for filepath, code in matches]
+        return [(filepath.strip(), code.rstrip("\r\n")) for filepath, code in matches]
 
     @staticmethod
     def _extract_search_replace(response: str) -> List[Tuple[str, str, str]]:
@@ -385,14 +391,14 @@ class CodeEditor:
             List of (filepath, search_text, replace_text) tuples.
         """
         pattern = (
-            r"### FILE:\s*(\S+)\s*\n"
-            r"<<<<<<< SEARCH\n"
-            r"(.*?)\n"
-            r"=======\n"
-            r"(.*?)\n"
+            r"### FILE:[ \t]*([^\r\n]+?)[ \t]*\r?\n"
+            r"<<<<<<< SEARCH\r?\n"
+            r"(.*?)\r?\n"
+            r"=======\r?\n"
+            r"(.*?)\r?\n"
             r">>>>>>> REPLACE"
         )
-        return re.findall(pattern, response, re.DOTALL)
+        return [(filepath.strip(), search, replace) for filepath, search, replace in re.findall(pattern, response, re.DOTALL)]
 
     @staticmethod
     def _syntax_ok(code: str) -> bool:
