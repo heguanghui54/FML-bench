@@ -22,7 +22,7 @@ All heavyweight state is rooted at `/media/heshi/game/fml-scientist`:
 
 ```text
 repo/  conda-envs/  conda-pkgs/  cache/  datasets/
-checkpoints/  results/  tmp/  bootstrap/
+checkpoints/  results/  tmp/  bootstrap/  packages/  asset-tools/
 ```
 
 Docker already uses `/media/heshi/game/docker-data` on `ubuntu-heshi`.
@@ -64,6 +64,22 @@ FML_DOWNLOAD_PROXY=http://127.0.0.1:17891 \
   bash scripts/setup_ubuntu_lite.sh
 ```
 
+Prepare AdaptiveSearch's GraphCodeBERT runtime after the Ubuntu external-disk
+bootstrap. Ubuntu stages the fixed macOS arm64 wheels and model snapshot on the
+2 TB disk; the script then copies them to this Mac external-volume repository,
+installs offline, and verifies a deterministic 768-dimensional embedding:
+
+```bash
+FML_DOWNLOAD_PROXY=http://127.0.0.1:17891 \
+  bash scripts/prepare_adaptivesearch_assets.sh
+```
+
+The frozen condition uses `torch==2.10.0`, `transformers==5.3.0`,
+`microsoft/graphcodebert-base` revision
+`2b0488a7bb0eefc7041f1bb2cad1ab26b0da269d`, CPU inference on the Mac
+controller, and `local_files_only=true`. Task training and evaluation continue
+to use the Ubuntu NVIDIA GPU.
+
 The controller also needs source-only templates for code editing, but never the
 Ubuntu datasets. Create them on the Mac external volume with:
 
@@ -94,6 +110,22 @@ Ubuntu datasets. Create them on the Mac external volume with:
 Every Codex call and SSH execution writes a versioned audit record. Formal GPU
 runs additionally require an idle-GPU preflight.
 
-The controller environment is deliberately small. Provider-specific packages
-such as Anthropic are imported only when that provider is selected; CodexCLI
-does not require an API key or those SDKs.
+Run the full readiness check before a campaign:
+
+```bash
+.controller-venv/bin/python -m ml_scientist.cli preflight \
+  --out artifacts/ml_scientist/controller_ready \
+  --model gpt-5.6-sol --provider CodexCLI \
+  --eval-backend ssh --ssh-host ubuntu-heshi \
+  --remote-project-root /media/heshi/game/fml-scientist/repo
+```
+
+If i4h is using the GPU through the paper-extension transient service, pause
+the owning unit (stopping only its child container lets the service continue):
+
+```bash
+ssh ubuntu-heshi 'systemctl --user stop i4h-p1-visual-robustness-runner.service'
+```
+
+Provider-specific packages such as Anthropic are imported only when that
+provider is selected; CodexCLI does not require an API key or those SDKs.

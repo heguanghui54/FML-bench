@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 : <<'DOC'
-Create the lightweight Mac-side controller environment for CodexCLI runs.
+Create the core Mac-side controller environment for CodexCLI runs.
 
 The environment lives beside the repository on the mounted external disk. It
-does not contain PyTorch, datasets, checkpoints, or task environments; those
-remain on the Ubuntu external disk.
+does not contain task datasets, checkpoints, or task environments; those remain
+on the Ubuntu external disk. AdaptiveSearch additionally needs the fixed,
+offline GraphCodeBERT bundle prepared by prepare_adaptivesearch_assets.sh.
 
 Optional environment:
   FML_CONTROLLER_PYTHON=/opt/homebrew/bin/python3.11
@@ -50,3 +51,4 @@ fi
 
 "$venv/bin/python" "$project_root/run_agent_benchmark.py" --help >/dev/null
 printf 'controller_python=%s\n' "$venv/bin/python"
+printf 'next_for_all_baselines=bash scripts/prepare_adaptivesearch_assets.sh\n'

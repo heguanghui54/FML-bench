@@ -35,5 +35,10 @@ agent:
     # Per-task max_reach calibration is inlined in agents/adaptivesearch/agent.py
     # (PER_TASK_MAX_REACH dict) — no external file loads at runtime.
     graphcodebert_model: "microsoft/graphcodebert-base"
+    # The controller runs on macOS while task evaluation uses the remote Ubuntu
+    # GPU. CPU preserves the calibrated embedding algorithm without claiming a
+    # local CUDA device; all large model files remain on the external project disk.
+    graphcodebert_cache_dir: ".cache/huggingface"
+    graphcodebert_local_files_only: true
     embed_max_tokens: 512
-    embed_device: "cuda"
+    embed_device: "cpu"

@@ -20,7 +20,8 @@ sub-rule A threshold.
 """
 from __future__ import annotations
 
-from typing import Dict
+from pathlib import Path
+from typing import Dict, Optional
 
 import numpy as np
 
@@ -34,15 +35,32 @@ class GraphCodeBERTEmbedder:
         model_id: str = "microsoft/graphcodebert-base",
         device: str = "cpu",
         max_len: int = MAX_TOKENS,
+        cache_dir: Optional[str] = None,
+        local_files_only: bool = False,
     ):
         import torch
         from transformers import AutoModel, AutoTokenizer
 
         self._torch = torch
-        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
-        self.model = AutoModel.from_pretrained(model_id).to(device).eval()
+        resolved_cache = None
+        if cache_dir:
+            cache_path = Path(cache_dir).expanduser().resolve()
+            cache_path.mkdir(parents=True, exist_ok=True)
+            resolved_cache = str(cache_path)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_id,
+            cache_dir=resolved_cache,
+            local_files_only=local_files_only,
+        )
+        self.model = AutoModel.from_pretrained(
+            model_id,
+            cache_dir=resolved_cache,
+            local_files_only=local_files_only,
+        ).to(device).eval()
         self.device = device
         self.max_len = max_len
+        self.cache_dir = resolved_cache
+        self.local_files_only = local_files_only
 
     def embed_files(self, files: Dict[str, str]) -> np.ndarray:
         """Embed a {filepath: content} snapshot using the chunk + sum pipeline.

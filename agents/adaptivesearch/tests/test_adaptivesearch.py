@@ -14,7 +14,14 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from agents.adaptivesearch.agent import AdaptiveSearchAgent, Branch, ExperimentRecord
+from agents.adaptivesearch.agent import (
+    AdaptiveSearchAgent,
+    Branch,
+    CALIBRATION_TASK_ALIASES,
+    ExperimentRecord,
+    PER_TASK_MAX_REACH,
+    PER_TASK_RANGE_META,
+)
 from agents.adaptivesearch.embeddings import participation_ratio
 from agents.base import AgentConfig, AgentType
 
@@ -509,6 +516,25 @@ class TestPreLoopSetupFailsLoud(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             a._set_per_task_max_reach()
         self.assertIn("Calibrated tasks", str(ctx.exception))
+
+    def test_canonical_task_ids_resolve_historical_calibration_labels(self):
+        expected = {
+            "Causality_causalml": "Causality_causalml_hard",
+            "Fairness_and_Bias_aif360": "Fairness_and_Bias_aif360_hard_postprocess",
+            "Privacy_privacymeter": "Privacy_privacymeter_corrected",
+            "Robustness_and_Reliability_art": "Robustness_and_Reliability_art_default_hard",
+        }
+        self.assertEqual(CALIBRATION_TASK_ALIASES, expected)
+        for canonical_name, calibration_name in expected.items():
+            with self.subTest(task=canonical_name):
+                agent = _make_agent(
+                    benchmark_name=canonical_name,
+                    metric_direction=PER_TASK_RANGE_META[calibration_name][0],
+                )
+                agent._set_per_task_max_reach()
+                self.assertEqual(agent.calibration_task_name, calibration_name)
+                self.assertEqual(agent.per_task_max_reach, PER_TASK_MAX_REACH[calibration_name])
+                self.assertEqual(agent._range_direction, PER_TASK_RANGE_META[calibration_name][0])
 
 
 class TestTriggerFiresOnlyOnce(unittest.TestCase):

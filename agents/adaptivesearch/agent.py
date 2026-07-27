@@ -96,6 +96,23 @@ PER_TASK_MAX_REACH: Dict[str, float] = {
     "Data_Efficiency_easyfsl":                     281.1667135104085,
 }
 
+# The published calibration artifacts used four historical workspace labels,
+# while the runnable repository exposes their canonical task IDs.  Keep the
+# benchmark/task identity canonical everywhere else and translate only at the
+# calibration lookup boundary.  The aliases do not change datasets, metrics,
+# directions, or protected-test semantics.
+CALIBRATION_TASK_ALIASES: Dict[str, str] = {
+    "Causality_causalml": "Causality_causalml_hard",
+    "Fairness_and_Bias_aif360": "Fairness_and_Bias_aif360_hard_postprocess",
+    "Privacy_privacymeter": "Privacy_privacymeter_corrected",
+    "Robustness_and_Reliability_art": "Robustness_and_Reliability_art_default_hard",
+}
+
+
+def _calibration_task_name(benchmark_name: str) -> str:
+    """Return the historical label used by AdaptiveSearch calibration."""
+    return CALIBRATION_TASK_ALIASES.get(benchmark_name, benchmark_name)
+
 
 # ===========================================================================
 # Per-task range-normalisation meta for the Phase-1 improvement curve.
@@ -260,11 +277,15 @@ class AdaptiveSearchAgent(BaseAgent):
         self.embed_model_id = str(p.get("graphcodebert_model", "microsoft/graphcodebert-base"))
         self.embed_max_len = int(p.get("embed_max_tokens", 512))
         self.embed_device = str(p.get("embed_device", "cpu"))
+        cache_dir = p.get("graphcodebert_cache_dir")
+        self.embed_cache_dir = str(cache_dir) if cache_dir else None
+        self.embed_local_files_only = bool(p.get("graphcodebert_local_files_only", False))
 
         # Lazy-allocated runtime state
         self.embedder: Optional[GraphCodeBERTEmbedder] = None
         self.g_baseline: Optional[np.ndarray] = None
         self.per_task_max_reach: Optional[float] = None
+        self.calibration_task_name: Optional[str] = None
         # Range-normalisation constants for the improvement curve (matches
         # compute_auc_over_steps.compute_auc_for_run). Resolved in _pre_loop_setup.
         self._range_direction: Optional[str] = None
@@ -435,13 +456,15 @@ class AdaptiveSearchAgent(BaseAgent):
         so that ``slope[W=50, eps=0.0005]`` is on the same scale as calibration.
         """
         benchmark_name = self.config.runtime_params.get("benchmark_name", "")
-        if benchmark_name not in PER_TASK_RANGE_META:
+        calibration_task_name = _calibration_task_name(benchmark_name)
+        if calibration_task_name not in PER_TASK_RANGE_META:
             raise ValueError(
                 f"AdaptiveSearch: no improvement-curve range meta for "
-                f"benchmark_name '{benchmark_name}'. Available tasks: "
+                f"benchmark_name '{benchmark_name}' (calibration label "
+                f"'{calibration_task_name}'). Available tasks: "
                 f"{sorted(PER_TASK_RANGE_META.keys())}"
             )
-        direction, p_best, p_worst_spec = PER_TASK_RANGE_META[benchmark_name]
+        direction, p_best, p_worst_spec = PER_TASK_RANGE_META[calibration_task_name]
         self._range_direction = direction
         # Transform the baseline into display space (Unlearning: -log10).
         if self.baseline_primary_metric is None:
@@ -954,19 +977,24 @@ class AdaptiveSearchAgent(BaseAgent):
             model_id=self.embed_model_id,
             device=self.embed_device,
             max_len=self.embed_max_len,
+            cache_dir=self.embed_cache_dir,
+            local_files_only=self.embed_local_files_only,
         )
 
     def _set_per_task_max_reach(self) -> None:
         """Resolve per-task reach calibration from the inlined ``PER_TASK_MAX_REACH``
         dict. Fail loud if the active benchmark is not in the calibration set."""
         benchmark_name = self.config.runtime_params.get("benchmark_name", "")
-        if benchmark_name not in PER_TASK_MAX_REACH:
+        calibration_task_name = _calibration_task_name(benchmark_name)
+        if calibration_task_name not in PER_TASK_MAX_REACH:
             raise ValueError(
                 f"AdaptiveSearch: no calibrated max_reach for benchmark_name "
-                f"'{benchmark_name}'. Calibrated tasks: "
+                f"'{benchmark_name}' (calibration label "
+                f"'{calibration_task_name}'). Calibrated tasks: "
                 f"{sorted(PER_TASK_MAX_REACH.keys())}"
             )
-        self.per_task_max_reach = PER_TASK_MAX_REACH[benchmark_name]
+        self.calibration_task_name = calibration_task_name
+        self.per_task_max_reach = PER_TASK_MAX_REACH[calibration_task_name]
 
     def _read_step_snapshot(self, step_id: int) -> Dict[str, str]:
         path = osp.join(self._parent_workspace, "step_snapshots",
@@ -1430,5 +1458,13 @@ class AdaptiveSearchAgent(BaseAgent):
                     "effdim_min": self.B_effdim_thr,
                 },
             },
+            "embedding": {
+                "model_id": self.embed_model_id,
+                "device": self.embed_device,
+                "max_tokens": self.embed_max_len,
+                "cache_dir": self.embed_cache_dir,
+                "local_files_only": self.embed_local_files_only,
+            },
+            "calibration_task_name": self.calibration_task_name,
             "per_task_max_reach": self.per_task_max_reach,
         }

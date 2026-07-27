@@ -8,14 +8,19 @@ seen.  This prevents the reporting layer from silently changing the experiment.
 from __future__ import annotations
 
 import csv
+import hashlib
+import importlib.metadata
 import json
 import os
 import platform
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Iterable
+
+import yaml
 
 from .statistical_analysis import write_statistical_analysis_protocol
 
@@ -33,6 +38,10 @@ PROVIDER_KEYS = {
 # have relatively high across-agent discrimination in the published aggregates.
 PILOT_TASKS = ("Privacy_privacymeter", "Generalization_domainbed")
 DEFAULT_TRIAL_SEEDS = (1103, 2207, 3301)
+ADAPTIVESEARCH_CONTROLLER_PACKAGES = {
+    "torch": "2.10.0",
+    "transformers": "5.3.0",
+}
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -235,6 +244,9 @@ def build_experiment_protocol(
     counts: dict[str, int] = {}
     for row in rows:
         counts[row["phase"]] = counts.get(row["phase"], 0) + 1
+    adaptive_params = next(
+        agent["parameters"] for agent in agents if agent["agent_id"] == "adaptivesearch"
+    )
     protocol = {
         "schema_version": "fml-scientist-experiment-protocol-v1",
         "catalog_commit": catalog["repository_commit"],
@@ -258,6 +270,13 @@ def build_experiment_protocol(
             "trial_seeds": list(trial_seeds),
             "confirmatory_max_steps": confirmatory_steps,
             "execution_backend": eval_backend,
+            "adaptive_search_embedding": {
+                "model_id": adaptive_params["graphcodebert_model"],
+                "device": adaptive_params["embed_device"],
+                "max_tokens": adaptive_params["embed_max_tokens"],
+                "cache_dir": adaptive_params.get("graphcodebert_cache_dir"),
+                "local_files_only": adaptive_params.get("graphcodebert_local_files_only", False),
+            },
         },
         "controls": [
             "same model and provider for every arm",
@@ -426,6 +445,106 @@ def _local_environment_tasks(
     }
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _adaptivesearch_controller_status(repo: Path) -> dict[str, Any]:
+    """Verify the local, offline GraphCodeBERT runtime used by AdaptiveSearch."""
+    config_path = repo / "configs" / "agents" / "adaptivesearch.yaml"
+    status: dict[str, Any] = {
+        "python_executable": sys.executable,
+        "expected_packages": dict(ADAPTIVESEARCH_CONTROLLER_PACKAGES),
+        "installed_packages": {},
+        "config": str(config_path),
+        "model_id": None,
+        "device": None,
+        "max_tokens": None,
+        "cache_dir": None,
+        "local_files_only": None,
+        "snapshot_revision": None,
+        "snapshot_dir": None,
+        "weight_sha256": None,
+        "missing_files": [],
+        "errors": [],
+        "ready": False,
+    }
+    for distribution, expected in ADAPTIVESEARCH_CONTROLLER_PACKAGES.items():
+        try:
+            installed = importlib.metadata.version(distribution)
+        except importlib.metadata.PackageNotFoundError:
+            installed = None
+        status["installed_packages"][distribution] = installed
+        if installed != expected:
+            status["errors"].append(
+                f"{distribution}=={expected} is required; found {installed or 'not installed'}."
+            )
+    try:
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        params = config["agent"]["adaptivesearch"]
+    except (OSError, KeyError, TypeError, yaml.YAMLError) as exc:
+        status["errors"].append(f"Cannot read AdaptiveSearch config: {exc}")
+        return status
+    model_id = str(params.get("graphcodebert_model", "microsoft/graphcodebert-base"))
+    device = str(params.get("embed_device", "cpu"))
+    cache_value = params.get("graphcodebert_cache_dir")
+    cache_dir = Path(str(cache_value)).expanduser() if cache_value else None
+    if cache_dir is not None and not cache_dir.is_absolute():
+        cache_dir = (repo / cache_dir).resolve()
+    local_files_only = bool(params.get("graphcodebert_local_files_only", False))
+    status.update(
+        {
+            "model_id": model_id,
+            "device": device,
+            "max_tokens": int(params.get("embed_max_tokens", 512)),
+            "cache_dir": str(cache_dir) if cache_dir else None,
+            "local_files_only": local_files_only,
+        }
+    )
+    if device != "cpu":
+        status["errors"].append(
+            "The macOS CodexCLI controller must use embed_device=cpu; task evaluation remains on the SSH GPU runner."
+        )
+    if not local_files_only:
+        status["errors"].append("graphcodebert_local_files_only must be true for frozen runs.")
+    if cache_dir is None:
+        status["errors"].append("graphcodebert_cache_dir is not configured.")
+        return status
+    model_cache = cache_dir / ("models--" + model_id.replace("/", "--"))
+    ref_path = model_cache / "refs" / "main"
+    try:
+        revision = ref_path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        status["errors"].append(f"Cannot resolve cached GraphCodeBERT revision: {exc}")
+        return status
+    snapshot_dir = model_cache / "snapshots" / revision
+    status["snapshot_revision"] = revision
+    status["snapshot_dir"] = str(snapshot_dir)
+    required = [
+        "config.json",
+        "merges.txt",
+        "pytorch_model.bin",
+        "special_tokens_map.json",
+        "tokenizer_config.json",
+        "vocab.json",
+    ]
+    missing = [name for name in required if not (snapshot_dir / name).is_file()]
+    status["missing_files"] = missing
+    if missing:
+        status["errors"].append(f"Cached GraphCodeBERT snapshot is missing: {missing}")
+    else:
+        try:
+            status["weight_sha256"] = _sha256_file(snapshot_dir / "pytorch_model.bin")
+        except OSError as exc:
+            status["errors"].append(f"Cannot hash cached GraphCodeBERT weights: {exc}")
+    status["ready"] = not status["errors"]
+    return status
+
+
 def preflight_environment(
     catalog: dict[str, Any], *, provider: str, model: str, repo: Path,
     eval_backend: str = "local", ssh_host: str = "ubuntu-heshi",
@@ -442,6 +561,7 @@ def preflight_environment(
         env_tool = next((name for name in ("conda", "mamba", "micromamba") if shutil.which(name)), None)
     required_key = PROVIDER_KEYS.get(provider)
     codex_status = _codex_cli_status() if provider == "CodexCLI" else None
+    adaptive_controller = _adaptivesearch_controller_status(repo)
     key_present = bool(os.environ.get(required_key)) if required_key else provider == "CodexCLI" and bool(codex_status and codex_status["logged_in"])
     if remote is not None:
         workspace_tasks = remote["workspace_tasks"]
@@ -470,6 +590,11 @@ def preflight_environment(
         blockers.append(f"{required_key} is not configured in this process environment.")
     if model == "SET_MODEL":
         blockers.append("The experiment model is still the SET_MODEL placeholder.")
+    if not adaptive_controller["ready"]:
+        blockers.append(
+            "AdaptiveSearch controller runtime is not ready: "
+            + "; ".join(adaptive_controller["errors"])
+        )
     system = platform.system()
     machine = remote.get("machine") if remote else platform.machine()
     gpu_tool = remote.get("nvidia_smi") if remote else shutil.which("nvidia-smi")
@@ -487,7 +612,7 @@ def preflight_environment(
     if not lite_environment_ready:
         blockers.append("One or more FML-Lite conda environments are missing a completed setup marker.")
     return {
-        "schema_version": "fml-scientist-preflight-v2",
+        "schema_version": "fml-scientist-preflight-v3",
         "ready": not blockers,
         "ready_for_confirmatory_lite": not blockers,
         "ready_for_full_extension": not blockers and full_workspace_ready and full_environment_ready,
@@ -500,6 +625,7 @@ def preflight_environment(
         "required_key_name": required_key,
         "required_key_present": key_present,
         "provider_auth": codex_status if codex_status is not None else {"required_key_name": required_key, "present": key_present},
+        "adaptivesearch_controller": adaptive_controller,
         "eval_backend": eval_backend,
         "ssh_host": ssh_host if eval_backend == "ssh" else None,
         "remote_project_root": remote_project_root if eval_backend == "ssh" else None,

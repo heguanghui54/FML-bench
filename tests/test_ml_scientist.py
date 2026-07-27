@@ -5,10 +5,11 @@ import unittest
 import csv
 import hashlib
 import json
+import sys
 from pathlib import Path
 
 from ml_scientist.catalog import build_catalog, load_simple_yaml
-from ml_scientist.campaign import CampaignError, load_run_matrix, run_campaign
+from ml_scientist.campaign import CampaignError, _command_argv, load_run_matrix, run_campaign
 from ml_scientist.experiment_design import build_experiment_protocol, preflight_environment, write_experiment_protocol
 from ml_scientist.governance import EvidenceGateError, EvidenceGatedSkillRegistry, initialize_governance_artifacts
 from ml_scientist.knowledge_base import build_agent_dossiers, build_metric_implementation_audit, build_task_dossiers, write_knowledge_base
@@ -494,6 +495,9 @@ class KnowledgeBaseTests(unittest.TestCase):
             audit = json.loads((Path(tmp) / "objective_completion_audit.json").read_text(encoding="utf-8"))
             self.assertEqual(audit["overall_status"], "PARTIAL_REAL_EXPERIMENTS_AND_MANUSCRIPT_EVALUATION_PENDING")
             self.assertEqual([row["status"] for row in audit["requirements"]].count("NOT_YET_PROVEN"), 2)
+            experiment_row = next(row for row in audit["requirements"] if row["requirement"] == "run sound new experiments")
+            self.assertNotIn("preflight is not ready", experiment_row["proof"])
+            self.assertIn("reported separately", experiment_row["proof"])
 
     def test_metric_audit_exposes_paper_scorer_semantic_differences(self):
         audit = build_metric_implementation_audit(ROOT, self.catalog)
@@ -534,6 +538,8 @@ class ExperimentDesignTests(unittest.TestCase):
         )
         self.assertEqual(protocol["factors"]["provider"], "CodexCLI")
         self.assertEqual(protocol["factors"]["execution_backend"], "ssh")
+        self.assertEqual(protocol["factors"]["adaptive_search_embedding"]["device"], "cpu")
+        self.assertTrue(protocol["factors"]["adaptive_search_embedding"]["local_files_only"])
         self.assertIn("not an exact reproduction", protocol["execution_platform_contract"]["controller_model_condition"])
         self.assertTrue(all("--provider CodexCLI" in row["command"] for row in rows))
         self.assertTrue(all("--eval-backend ssh" in row["command"] for row in rows))
@@ -546,6 +552,8 @@ class ExperimentDesignTests(unittest.TestCase):
         self.assertEqual(report["lite_workspace_task_total"], 8)
         self.assertEqual(report["lite_environment_task_total"], 8)
         self.assertIn("ready_for_full_extension", report)
+        self.assertIn("adaptivesearch_controller", report)
+        self.assertIn("weight_sha256", report["adaptivesearch_controller"])
         self.assertFalse(report["ready"])
 
     def test_llm_calls_use_the_frozen_trial_seed(self):
@@ -573,6 +581,11 @@ class ExperimentDesignTests(unittest.TestCase):
             self.assertEqual(state["selected_run_count"], 2)
             self.assertEqual(state["status_counts"], {"DRY_RUN_READY": 2})
             self.assertFalse(state["complete"])
+
+    def test_campaign_reuses_the_active_controller_python(self):
+        argv = _command_argv("python run_agent_benchmark.py --model fixed")
+        self.assertEqual(argv[0], sys.executable)
+        self.assertEqual(argv[1:], ["run_agent_benchmark.py", "--model", "fixed"])
 
 
 class SkillGovernanceTests(unittest.TestCase):

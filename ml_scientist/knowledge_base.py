@@ -492,7 +492,7 @@ def write_knowledge_base(root: Path, catalog: dict[str, Any], out_dir: Path) -> 
                 "requirement": "run sound new experiments",
                 "status": "NOT_YET_PROVEN",
                 "evidence": ["../protocol/experiment_protocol.json", "../protocol/preflight.json", "../experiments/experiment_dataset_status.json"],
-                "proof": "The protocol exists, but the reporter has zero real new records and preflight is not ready.",
+                "proof": "The protocol exists, but the reporter has zero real new records. Execution readiness is reported separately by protocol/preflight.json.",
             },
             {
                 "requirement": "produce and evaluate a good new paper",

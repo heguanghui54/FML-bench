@@ -27,6 +27,7 @@ ENV/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+/.cache/
 
 # Jupyter
 .ipynb_checkpoints/

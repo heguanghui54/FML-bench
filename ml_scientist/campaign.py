@@ -7,6 +7,7 @@ import hashlib
 import json
 import shlex
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,20 @@ def _matching_summaries(paths: list[Path], row: dict[str, str]) -> list[Path]:
     return matches
 
 
+def _command_argv(command: str) -> list[str]:
+    """Run frozen Python commands with the campaign controller interpreter.
+
+    Protocol rows intentionally remain portable (``python ...``), but the
+    controller may have been launched from a dedicated virtual environment.
+    Reusing ``sys.executable`` prevents a subprocess from silently falling back
+    to the macOS system Python and changing the installed dependency set.
+    """
+    argv = shlex.split(command)
+    if argv and argv[0] in {"python", "python3"}:
+        argv[0] = sys.executable
+    return argv
+
+
 def run_campaign(
     *,
     matrix_path: Path,
@@ -116,7 +131,7 @@ def run_campaign(
             log_path = log_dir / f"{row['run_id']}.log"
             with log_path.open("w", encoding="utf-8") as log_handle:
                 completed = subprocess.run(
-                    shlex.split(row["command"]),
+                    _command_argv(row["command"]),
                     cwd=repo,
                     stdout=log_handle,
                     stderr=subprocess.STDOUT,
