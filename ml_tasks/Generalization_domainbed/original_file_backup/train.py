@@ -259,5 +259,11 @@ if __name__ == "__main__":
 
     save_checkpoint('model.pkl')
 
+    # DomainBed's infinite iterators otherwise keep multiprocessing workers
+    # alive after every result has been written. Explicit shutdown makes the
+    # measured wall/GPU time end with the experiment, not at interpreter GC.
+    for loader in train_loaders + uda_loaders + eval_loaders:
+        loader.close()
+
     with open(os.path.join(args.output_dir, 'done'), 'w') as f:
         f.write('done')

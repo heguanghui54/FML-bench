@@ -118,9 +118,18 @@ def get_batch_responses_from_llm(
         msg_history=None,
         temperature=0.75,
         n_responses=1,
+        budget_category="proposal",
 ):
     if msg_history is None:
         msg_history = []
+
+    direct_batch = 'gpt' in model or model == "llama-3-1-405b-instruct"
+    ledger = None
+    if direct_batch:
+        from ml_scientist.execution_contracts import current_budget_ledger
+        ledger = current_budget_ledger()
+        if ledger is not None:
+            ledger.before_llm(budget_category, count=n_responses)
 
     if 'gpt' in model:
         new_msg_history = msg_history + [{"role": "user", "content": msg}]
@@ -200,6 +209,9 @@ def get_batch_responses_from_llm(
         
         usage_info = total_usage
 
+    if ledger is not None:
+        ledger.record_llm(usage_info, budget_category)
+
     if print_debug:
         print()
         print("*" * 20 + " LLM START " + "*" * 20)
@@ -221,7 +233,15 @@ def get_response_from_llm(
         print_debug=False,
         msg_history=None,
         temperature=0.75,
+        budget_category="proposal",
 ):
+    # Import lazily so the published baseline modules remain usable without the
+    # local ml_scientist extension package being initialized at import time.
+    from ml_scientist.execution_contracts import current_budget_ledger
+
+    ledger = current_budget_ledger()
+    if ledger is not None:
+        ledger.before_llm(budget_category)
     if msg_history is None:
         msg_history = []
 
@@ -409,6 +429,8 @@ def get_response_from_llm(
 
     # Extract usage info
     usage_info = extract_usage_info(response)
+    if ledger is not None:
+        ledger.record_llm(usage_info, budget_category)
 
     if print_debug:
         print()

@@ -8,6 +8,7 @@ Usage:
     python run_agent_benchmark.py --agent-config configs/agents/aide.yaml --task-config configs/tasks/generalization.yaml agent.aide.num_drafts=3
 """
 import argparse
+import hashlib
 import json
 import os
 import random
@@ -53,6 +54,12 @@ Examples:
                         help="Root directory for experiment outputs (default: benchmark_results)")
     parser.add_argument("--seed", type=int, default=0,
                         help="Research-controller seed recorded in summary.json (default: 0)")
+    parser.add_argument(
+        "--budget-profile", choices=["legacy-unbounded", "matched-v1"],
+        default="legacy-unbounded",
+        help="Shared resource envelope. Use matched-v1 for post-fix comparisons; "
+             "legacy-unbounded preserves diagnostic compatibility.",
+    )
     parser.add_argument("--save-code-backup", action="store_true", default=False,
                         help="Back up all git-changed files in the task repo into "
                              "execution_<ts>/code_backup/ before each validation run. "
@@ -137,6 +144,7 @@ AGENT_TYPE_MAP = {
     "openevolve": AgentType.OPENEVOLVE,
     "autoresearch": AgentType.AUTORESEARCH,
     "adaptivesearch": AgentType.ADAPTIVESEARCH,
+    "adaptive_pipeline": AgentType.ADAPTIVE_PIPELINE,
 }
 
 
@@ -149,6 +157,53 @@ def get_harness_git_commit() -> str:
         ).strip()
     except (OSError, subprocess.CalledProcessError):
         return "unknown"
+
+
+def build_harness_source_manifest(root: str | None = None) -> dict[str, Any]:
+    """Hash the effective harness source, including uncommitted new modules.
+
+    A git commit alone is insufficient while the repair branch has tracked and
+    untracked implementation files.  This manifest deliberately excludes run
+    outputs and workspaces and hashes only executable/configuration sources.
+    """
+    base = os.path.abspath(root or os.path.dirname(os.path.abspath(__file__)))
+    source_roots = ("agents", "benchmark", "ml_scientist", "configs", "scripts", "ml_tasks")
+    suffixes = {".py", ".yaml", ".yml", ".json", ".sh"}
+    paths: list[str] = []
+    top_level = os.path.join(base, "run_agent_benchmark.py")
+    if os.path.isfile(top_level):
+        paths.append(top_level)
+    for relative_root in source_roots:
+        absolute_root = os.path.join(base, relative_root)
+        if not os.path.isdir(absolute_root):
+            continue
+        for directory, names, filenames in os.walk(absolute_root):
+            names[:] = sorted(
+                name for name in names
+                if name not in {"__pycache__", ".git", "results_tmp", "baseline_results"}
+            )
+            for filename in sorted(filenames):
+                path = os.path.join(directory, filename)
+                if os.path.splitext(filename)[1].lower() in suffixes and os.path.isfile(path):
+                    paths.append(path)
+    records = []
+    digest = hashlib.sha256()
+    for path in sorted(set(paths)):
+        relative = os.path.relpath(path, base).replace(os.sep, "/")
+        with open(path, "rb") as handle:
+            file_sha256 = hashlib.sha256(handle.read()).hexdigest()
+        records.append({"path": relative, "sha256": file_sha256, "size_bytes": os.path.getsize(path)})
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(file_sha256.encode("ascii"))
+        digest.update(b"\n")
+    return {
+        "schema_version": "fml-harness-source-manifest-v1",
+        "git_commit": get_harness_git_commit() if root is None else "test-root",
+        "source_file_count": len(records),
+        "content_sha256": digest.hexdigest(),
+        "files": records,
+    }
 
 
 def get_agent_config(config: Dict[str, Any]) -> AgentConfig:
@@ -168,6 +223,9 @@ def get_agent_config(config: Dict[str, Any]) -> AgentConfig:
     runtime_params = {
         "metrics": config.get("metrics", {}),
         "experiment": config.get("experiment", {}),
+        "budget_profile": config.get("budget_profile", "legacy-unbounded"),
+        "budget_limits": config.get("budget_limits", {}),
+        "reproducibility_contract": config.get("reproducibility_contract", {}),
     }
 
     return AgentConfig(
@@ -200,6 +258,7 @@ def save_results(result, config: Dict[str, Any], runner: BenchmarkRunner):
             pass
 
         summary = {
+            "schema_version": "fml-summary-v2",
             "benchmark": runner.benchmark_name,
             "agent": agent_cfg.agent_type.value,
             "model": agent_cfg.model,
@@ -236,6 +295,20 @@ def save_results(result, config: Dict[str, Any], runner: BenchmarkRunner):
             },
             "metadata": result.metadata,
         }
+        execution_contracts = result.metadata.get("execution_contracts", {})
+        summary["resource_accounting_status"] = "COMPLETE_V2"
+        summary["budget_ledger"] = execution_contracts.get("budget_ledger", {})
+        summary["execution_counts"] = execution_contracts.get("execution_counts", {})
+        summary["candidate_activation"] = execution_contracts.get("activation_records", [])
+        summary["reproducibility"] = {
+            "contract": (agent_cfg.runtime_params.get("reproducibility_contract") or {}),
+            "environment_evidence": execution_contracts.get("reproducibility_records", []),
+            "protected_test_comparison": (
+                result.test_result.get("reproducibility") if result.test_result else None
+            ),
+        }
+        summary["gpu_telemetry"] = execution_contracts.get("gpu_telemetry_summaries", [])
+        summary["gpu_safety_contract"] = execution_contracts.get("gpu_safety_contract")
         save_path = os.path.join(result.parent_workspace, "summary.json")
     elif isinstance(result, dict):
         summary = result
@@ -249,6 +322,19 @@ def save_results(result, config: Dict[str, Any], runner: BenchmarkRunner):
         return
 
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    source_manifest = config.get("_harness_source_manifest")
+    if isinstance(source_manifest, dict):
+        manifest_path = os.path.join(os.path.dirname(save_path), "harness_source_manifest.json")
+        with open(manifest_path, "w") as handle:
+            json.dump(source_manifest, handle, indent=2)
+        with open(manifest_path, "rb") as handle:
+            manifest_sha256 = hashlib.sha256(handle.read()).hexdigest()
+        summary["harness_source_manifest"] = {
+            "path": manifest_path,
+            "sha256": manifest_sha256,
+            "content_sha256": source_manifest.get("content_sha256"),
+            "source_file_count": source_manifest.get("source_file_count"),
+        }
     with open(save_path, 'w') as f:
         json.dump(summary, f, indent=2, default=str)
     print(f"\nSummary saved to: {save_path}")
@@ -340,6 +426,13 @@ def main():
             "benchmark": task_cfg.get("benchmark", {}),
             "metrics": task_cfg.get("metrics", {}),
             "experiment": {"seed": args.seed},
+            "budget_profile": args.budget_profile,
+            "reproducibility_contract": {
+                "mode": "repeat_guarded",
+                "metric_absolute_tolerance": 0.01,
+                "require_same_constraint_classification": True,
+                "no_favourable_tie_breaker": True,
+            },
         }
     except FileNotFoundError as e:
         print(f"Error: Configuration file not found: {e}")
@@ -349,6 +442,9 @@ def main():
         sys.exit(1)
 
     apply_overrides(config, args)
+    # Freeze before agent initialization so the summary identifies the code
+    # that authorized the run, not whatever happens to be present afterward.
+    config["_harness_source_manifest"] = build_harness_source_manifest()
 
     # Validate benchmark name
     benchmark_name = config.get("benchmark", {}).get("name")

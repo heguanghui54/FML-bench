@@ -1341,6 +1341,7 @@ class OpenEvolveAgent(BaseAgent):
                 client=self.client,
                 model=self.config.model,
                 system_message="You are an ML experiment analyst. Be concise.",
+                budget_category="review",
             )
             if usage:
                 self.token_usage_log.append(usage)

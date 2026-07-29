@@ -1,0 +1,6 @@
+# Controlled macOS controller test/runtime environment (external-drive project .venv)
+backoff==2.2.1
+numpy==2.5.1
+openai==2.50.0
+PyYAML==6.0.3
+requests==2.34.2

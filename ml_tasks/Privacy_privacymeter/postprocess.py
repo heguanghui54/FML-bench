@@ -13,6 +13,14 @@ import numpy as np
 import os
 
 
+CONSTRAINT_CONTRACT_VERSION = "privacy-privacymeter-confirmatory-v2"
+BASELINE_TEST_ACCURACY = 0.61393
+ACCURACY_TOLERANCE = 0.01
+MIN_TEST_ACCURACY = BASELINE_TEST_ACCURACY - ACCURACY_TOLERANCE
+MAX_TPR_AT_0_1_FPR = 0.02
+MAX_TPR_AT_0_0_FPR = 0.005
+
+
 def main(exp_dir: str, split: str):
     log_file = os.path.join(exp_dir, "report", "log_time_analysis.log")
 
@@ -71,12 +79,9 @@ def main(exp_dir: str, split: str):
     auc_gap = abs(auc_mean - 0.5)
     auc_gap_list = [abs(auc - 0.5) for auc in auc_split]
 
-    # Constraint checks.
-    # - Val: strict, no tolerance. Violation → auc_gap=None + raise ValueError.
-    # - Test: tolerant. Violation → report baseline AUC_gap + preserve originals.
-    baseline_tpr01 = 0.0
-    baseline_tpr0 = 0.0
-    baseline_test_acc = 0.610
+    # One source-grounded constraint contract applies to both validation and
+    # protected test.  Earlier pilot code used different thresholds by split;
+    # confirmatory-v2 removes that selection/evaluation mismatch.
     violations = []
 
     # Save original metrics before any replacement
@@ -88,29 +93,37 @@ def main(exp_dir: str, split: str):
         "test_acc": test_acc_mean,
     }
 
-    if split == 'val':
-        # Val: strict — no tolerance
-        if tpr01_mean > baseline_tpr01 or tpr0_mean > baseline_tpr0:
-            auc_gap = None
-            violations.append(f"TPR constraint violated: TPR@0.1%={tpr01_mean}, TPR@0.0%={tpr0_mean}")
-        if test_acc_mean < baseline_test_acc:
-            auc_gap = None
-            violations.append(f"Accuracy constraint violated: {test_acc_mean} < {baseline_test_acc}")
-    else:
-        # Test: tolerant — TPR@0.1% ≤ 0.02, TPR@0.0% ≤ 0.005, acc ≥ 0.600
-        if tpr01_mean > 0.02 or tpr0_mean > 0.005:
-            violations.append(f"TPR constraint violated: TPR@0.1%={tpr01_mean}, TPR@0.0%={tpr0_mean}")
-        if test_acc_mean < baseline_test_acc - 0.01:
-            violations.append(f"Accuracy constraint violated: {test_acc_mean} < {baseline_test_acc - 0.01}")
+    if tpr01_mean > MAX_TPR_AT_0_1_FPR or tpr0_mean > MAX_TPR_AT_0_0_FPR:
+        violations.append(
+            "TPR constraint violated: "
+            f"TPR@0.1%={tpr01_mean} > {MAX_TPR_AT_0_1_FPR} or "
+            f"TPR@0.0%={tpr0_mean} > {MAX_TPR_AT_0_0_FPR}"
+        )
+    if test_acc_mean < MIN_TEST_ACCURACY:
+        violations.append(
+            f"Accuracy constraint violated: {test_acc_mean} < {MIN_TEST_ACCURACY}"
+        )
 
-        if violations:
-            # Fallback to baseline test AUC_gap
-            auc_gap = 0.3213666666666667
-            auc_gap_list = [0.32030000000000003, 0.31799999999999995, 0.3258]
+    if violations and split == 'val':
+        auc_gap = None
+    elif violations:
+        # Preserve FML's constraint-adjusted test credit while keeping the raw
+        # candidate measurements in original_metrics below.
+        auc_gap = 0.3213666666666667
+        auc_gap_list = [0.32030000000000003, 0.31799999999999995, 0.3258]
 
     constraint_violated = bool(violations)
 
     final_info = {
+        "constraint_contract": {
+            "version": CONSTRAINT_CONTRACT_VERSION,
+            "baseline_test_accuracy": BASELINE_TEST_ACCURACY,
+            "accuracy_tolerance": ACCURACY_TOLERANCE,
+            "minimum_test_accuracy": MIN_TEST_ACCURACY,
+            "maximum_tpr_at_0_1_fpr": MAX_TPR_AT_0_1_FPR,
+            "maximum_tpr_at_0_0_fpr": MAX_TPR_AT_0_0_FPR,
+            "same_thresholds_for_validation_and_test": True,
+        },
         "cifar10": {
             "means": {
                 "AUC_gap_mean": auc_gap,
@@ -131,12 +144,14 @@ def main(exp_dir: str, split: str):
                 "TPR@0.0%FPR": tpr0_split,
                 "test_acc": test_acc_split,
                 "constraint_violated": constraint_violated,
+                "constraint_violations": violations,
             },
         }
     }
 
-    # Test constraint violated: preserve agent's original metrics for observability
-    if split == 'test' and constraint_violated:
+    # Preserve the uncredited measurements on either split so failure remains a
+    # scientific outcome rather than an opaque crash or a metric-free fallback.
+    if constraint_violated:
         final_info["cifar10"]["original_metrics"] = original_metrics
 
     output_file = os.path.join(exp_dir, f"{split}_info.json")

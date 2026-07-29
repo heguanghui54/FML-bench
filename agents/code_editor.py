@@ -133,6 +133,12 @@ class CodeEditor:
         Returns:
             EditResult with success status, changed files, and token usage.
         """
+        from ml_scientist.execution_contracts import current_budget_ledger
+
+        ledger = current_budget_ledger()
+        if ledger is not None:
+            ledger.before_llm("edit")
+
         # 1. Read current content of all target files
         try:
             targets = self._read_targets()
@@ -161,6 +167,8 @@ class CodeEditor:
                 "completion_tokens": response.usage.completion_tokens,
                 "total_tokens": response.usage.total_tokens,
             }
+            if ledger is not None:
+                ledger.record_llm(token_usage, "edit")
         except Exception as e:
             logger.error("LLM call failed: %s", e)
             return EditResult(success=False, error=f"LLM call failed: {e}")
@@ -310,7 +318,7 @@ class CodeEditor:
             if resolved is None:
                 logger.warning("Skipping unrecognized file path from LLM: %s", filepath)
                 continue
-            if not self._syntax_ok(code):
+            if not self._syntax_ok(code, resolved):
                 logger.warning("Syntax error in whole-file output for %s — skipping.", resolved)
                 continue
             is_safe, violations = self._check_code_safety(code)
@@ -338,7 +346,7 @@ class CodeEditor:
                 )
                 continue
             new_content = content.replace(search, replace, 1)
-            if not self._syntax_ok(new_content):
+            if not self._syntax_ok(new_content, resolved):
                 logger.warning(
                     "Syntax error after applying SEARCH/REPLACE to %s — skipping.", resolved
                 )
@@ -401,11 +409,15 @@ class CodeEditor:
         return [(filepath.strip(), search, replace) for filepath, search, replace in re.findall(pattern, response, re.DOTALL)]
 
     @staticmethod
-    def _syntax_ok(code: str) -> bool:
-        """Check whether *code* is syntactically valid Python.
+    def _syntax_ok(code: str, filepath: str | None = None) -> bool:
+        """Check Python targets with ``ast.parse``; accept text targets as text.
 
-        Returns True if ast.parse succeeds, False otherwise.
+        A missing filepath preserves the historical Python-only behavior used by
+        callers and tests.  Non-Python target files still pass the independent
+        safety scan before they can be written.
         """
+        if filepath and Path(filepath).suffix.lower() not in {".py", ".pyi"}:
+            return True
         try:
             ast.parse(code)
             return True

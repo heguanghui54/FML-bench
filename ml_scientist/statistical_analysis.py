@@ -12,21 +12,30 @@ from pathlib import Path
 from typing import Any
 
 
-def build_statistical_analysis_protocol() -> dict[str, Any]:
+def build_statistical_analysis_protocol(
+    *,
+    primary_phase: str = "confirmatory_lite",
+    suite_label: str = "the fixed FML-Lite confirmatory task suite",
+    seed_role: str = "research-agent seed",
+) -> dict[str, Any]:
     return {
         "schema_version": "fml-scientist-statistical-analysis-v1",
         "status": "PREREGISTRATION_TEMPLATE_MUST_BE_FROZEN_BEFORE_PROTECTED_TESTS",
         "scope": "new controlled campaign records only; published FML aggregates are excluded",
         "estimand": {
-            "population": "the fixed FML-Lite confirmatory task suite under the frozen model, provider, budgets, and task commits",
+            "population": f"{suite_label} under the frozen model, provider, budgets, and task commits",
             "outcome": "FML normalized protected-test improvement with the checked-in fallback policy",
             "contrast": "agent-left minus agent-right, averaged equally over every task in a complete trial block",
-            "experimental_run_unit": "one agent-task-seed run",
-            "primary_uncertainty_unit": "one matched seed trial after averaging the complete fixed task suite",
-            "why": "tasks are repeated benchmark components inside a seed block and are not treated as independent stochastic replications",
+            "experimental_run_unit": f"one agent-task-{seed_role.replace(' ', '_')} run",
+            "primary_uncertainty_unit": f"one matched seed trial ({seed_role}) after averaging the complete fixed task suite",
+            "task_seed_boundary": (
+                "Task split/training seeds are benchmark-owned and fixed across agents and trials; "
+                "the trial seed measures research-agent stochasticity, not independent model-training replication."
+            ),
+            "why": "tasks are repeated benchmark components inside an agent-seed block and are not treated as independent stochastic replications",
         },
         "primary_analysis": {
-            "phase": "confirmatory_lite",
+            "phase": primary_phase,
             "complete_case_rule": "include a paired seed block only when both agents have one credited outcome for every preregistered task",
             "reported_statistics": [
                 "paired seed-block mean and median difference",
@@ -89,6 +98,7 @@ def build_statistical_analysis_protocol() -> dict[str, Any]:
             "pilot": "diagnostic only",
             "confirmatory_lite": "eligible only after protocol freeze, complete provenance, and multiplicity-aware reporting",
             "confirmatory_full": "eligible as a separately labeled extension if frozen before execution",
+            "confirmatory_heldout_transfer": "eligible only after exposure audit, protocol freeze, complete provenance, and multiplicity-aware reporting",
             "published_prior": "context and hypothesis formation only",
         },
         "precision_escalation": {
@@ -117,7 +127,7 @@ def _markdown(protocol: dict[str, Any]) -> str:
             "",
             "## Primary estimand",
             "",
-            "Compare two agents using FML normalized protected-test improvement. Within each matched seed, average all preregistered tasks equally; uncertainty is then computed across complete seed-block means. This estimates performance on the fixed benchmark suite without pretending that task rows are independent replications.",
+            "Compare two agents using FML normalized protected-test improvement. Within each matched research-agent seed, average all preregistered tasks equally; uncertainty is then computed across complete agent-seed block means. Task training/split seeds remain benchmark-owned and fixed, so these trials measure research-agent stochasticity and must not be described as independent model-training seeds.",
             "",
             "## Required primary result table",
             "",
@@ -151,9 +161,19 @@ def _markdown(protocol: dict[str, Any]) -> str:
     )
 
 
-def write_statistical_analysis_protocol(out_dir: Path) -> dict[str, Any]:
+def write_statistical_analysis_protocol(
+    out_dir: Path,
+    *,
+    primary_phase: str = "confirmatory_lite",
+    suite_label: str = "the fixed FML-Lite confirmatory task suite",
+    seed_role: str = "research-agent seed",
+) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    protocol = build_statistical_analysis_protocol()
+    protocol = build_statistical_analysis_protocol(
+        primary_phase=primary_phase,
+        suite_label=suite_label,
+        seed_role=seed_role,
+    )
     (out_dir / "statistical_analysis_protocol.json").write_text(
         json.dumps(protocol, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )

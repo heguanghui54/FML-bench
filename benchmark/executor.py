@@ -5,15 +5,30 @@ Provides run_val() and run_test() for validation and test phases,
 with process-group-based subprocess kill for reliable timeout handling.
 """
 import json
+import hashlib
 import os
 import os.path as osp
 import shutil
 import signal
 import subprocess
+import sys
+import time
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from benchmark.utils import get_changed_files
+from benchmark.runtime_probe import (
+    finalize_runtime_probe,
+    prepare_runtime_probe,
+    probe_environment_prefix,
+)
+from ml_scientist.execution_contracts import (
+    BudgetExceeded,
+    capture_reproducibility_evidence,
+    current_budget_ledger,
+    reproducibility_environment,
+)
 
 
 class SubprocessResult:
@@ -55,6 +70,46 @@ class BenchmarkExecutor:
         self.output_dir = output_dir
         self.workspace_dir = None
         self._current_proc = None  # Track running subprocess for cleanup on external kill
+        self.execution_counts = {
+            "candidate_validation_count": 0,
+            "pre_test_validation_count": 0,
+            "protected_test_count": 0,
+        }
+        self.activation_records = []
+        self.reproducibility_records = [capture_reproducibility_evidence(
+            config.get("_experimental_seed"), execution_backend="local-controller"
+        )]
+        self.gpu_telemetry_summaries = []
+        self.baseline_target_sources: dict[str, str] = {}
+        self.phase_command_durations: dict[str, list[float]] = {
+            "val": [], "pre_test_val": [], "test": []
+        }
+        self._last_command_duration_seconds: float | None = None
+        # Keep the latest in-context ledger snapshot on the executor. Cleanup and
+        # interruption handlers can run after the ContextVar has been reset; the
+        # persisted execution contract must not lose the resource accounting.
+        self._budget_ledger_snapshot: dict | None = None
+
+    def _capture_budget_ledger_snapshot(self) -> dict | None:
+        ledger = current_budget_ledger()
+        if ledger is not None:
+            self._budget_ledger_snapshot = ledger.snapshot()
+        return self._budget_ledger_snapshot
+
+    def _record_activation(self, activation: dict, phase: str) -> None:
+        self.activation_records.append(activation)
+        if "runtime_reproducibility_passed" in activation:
+            self.reproducibility_records.append({
+                "schema_version": "fml-runtime-reproducibility-validation-v1",
+                "phase": phase,
+                "passed": activation.get("runtime_reproducibility_passed"),
+                "process_count": activation.get("runtime_reproducibility_process_count", 0),
+                "evidence_sha256": activation.get("runtime_reproducibility_evidence_sha256"),
+                "requested_experimental_seeds": activation.get("requested_experimental_seeds", []),
+                "observed_torch_initial_seeds": activation.get("observed_torch_initial_seeds", []),
+                "task_seed_override_observed": activation.get("task_seed_override_observed", False),
+                "seed_interpretation": activation.get("seed_interpretation"),
+            })
 
     def setup_workspace(self) -> str:
         """
@@ -87,8 +142,39 @@ class BenchmarkExecutor:
 
         # Reset git state in the task repo
         self._reset_git()
+        self._stage_candidate_config_files()
+        self._capture_baseline_target_sources()
 
         return self.workspace_dir
+
+    def _stage_candidate_config_files(self) -> None:
+        for row in self.config.get("candidate_config_files", []):
+            source_relative = Path(str(row.get("source", "")))
+            target_relative = Path(str(row.get("target", "")))
+            if (
+                not source_relative.parts
+                or not target_relative.parts
+                or source_relative.is_absolute()
+                or target_relative.is_absolute()
+                or ".." in source_relative.parts
+                or ".." in target_relative.parts
+            ):
+                raise ValueError(f"Unsafe candidate config mapping: {row}")
+            source = Path("ml_tasks") / str(self.benchmark_name) / source_relative
+            target = Path(self.repo_dir).resolve() / target_relative
+            if not source.is_file():
+                raise FileNotFoundError(f"Candidate config baseline missing: {source}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+
+    def _capture_baseline_target_sources(self) -> None:
+        repo = Path(self.repo_dir).resolve()
+        self.baseline_target_sources = {}
+        for relative in self.config.get("target_files", []):
+            path = repo / relative
+            self.baseline_target_sources[relative] = (
+                path.read_text(encoding="utf-8") if path.is_file() else ""
+            )
 
     def run_val(self, run_id: int) -> dict:
         """
@@ -147,6 +233,26 @@ class BenchmarkExecutor:
                     "error": f"No '{command_key}' or 'execute_commands' specified in config"
                 }
 
+        phase_kind = (
+            "test" if command_key == "test_command"
+            else "pre_test_val" if str(run_id) == "pre_test_val"
+            else "val"
+        )
+        ledger = current_budget_ledger()
+        try:
+            if ledger is not None:
+                self._admit_phase_budget(phase_kind, ledger)
+                ledger.before_execution(phase_kind)
+                self._capture_budget_ledger_snapshot()
+        except BudgetExceeded as exc:
+            return {"success": False, "results": None, "primary_metric": None, "error": str(exc)}
+        count_key = {
+            "val": "candidate_validation_count",
+            "pre_test_val": "pre_test_validation_count",
+            "test": "protected_test_count",
+        }[phase_kind]
+        self.execution_counts[count_key] += 1
+
         # 1. Clean results_tmp/ if it exists
         results_tmp_dir = osp.join(osp.abspath(self.repo_dir), "results_tmp")
         if osp.exists(results_tmp_dir):
@@ -161,6 +267,39 @@ class BenchmarkExecutor:
             print(f"Warning: Removing existing execution directory: {execution_dir}")
             shutil.rmtree(execution_dir)
         os.makedirs(execution_dir, exist_ok=True)
+
+        repo_path = Path(self.repo_dir).resolve()
+        activation_contract = prepare_runtime_probe(
+            repo=repo_path,
+            target_files=[] if phase_kind == "test" else list(self.config.get("target_files", [])),
+            baseline_sources=self.baseline_target_sources,
+            run_id=str(run_id),
+            configuration={
+                "benchmark": self.benchmark_name,
+                "agent": self.agent_name,
+                "metric": self.config.get("metric"),
+                "experimental_seed": self.config.get("_experimental_seed"),
+                "phase": phase_kind,
+            },
+        )
+        if activation_contract is not None and not activation_contract["passed_static_contract"]:
+            validation = finalize_runtime_probe(
+                repo=repo_path,
+                execution_dir=Path(execution_dir),
+                contract=activation_contract,
+            )
+            rejection_reason = activation_contract.get(
+                "static_rejection_reason", "INVALID_EXECUTION_STATIC_CONTRACT"
+            )
+            validation["status"] = rejection_reason
+            self._record_activation(validation, phase_kind)
+            return {
+                "success": False,
+                "results": None,
+                "primary_metric": None,
+                "error": rejection_reason,
+                "activation": validation,
+            }
 
         # 3. Backup modified files (val only, and only when explicitly enabled).
         # code_backup/ is a snapshot of ALL git-changed files, dominated in size by
@@ -181,6 +320,10 @@ class BenchmarkExecutor:
                     print(f"Warning: Preprocess failed: {pre_result.stderr}")
 
         # 4. Run the command (with .git protection)
+        repro_env = reproducibility_environment(self.config.get("_experimental_seed"))
+        env_prefix = " ".join(f"{key}={value}" for key, value in repro_env.items()) + " "
+        env_prefix += probe_environment_prefix()
+        command = env_prefix + command
         print(f"Running {command_key}: {command}")
         git_protected = self._protect_git_dir()
         try:
@@ -188,6 +331,8 @@ class BenchmarkExecutor:
         finally:
             if git_protected:
                 self._unprotect_git_dir()
+        if self._last_command_duration_seconds is not None:
+            self.phase_command_durations[phase_kind].append(self._last_command_duration_seconds)
 
         # 4.1 Verify workspace integrity after execution
         integrity_error = self._check_workspace_integrity()
@@ -205,11 +350,33 @@ class BenchmarkExecutor:
             phase = "val" if command_key == "val_command" else "test"
             self._save_bug_execution_record(run_id, execution_timestamp, phase, result)
 
+            activation = finalize_runtime_probe(
+                repo=repo_path,
+                execution_dir=Path(execution_dir),
+                contract=activation_contract,
+            )
+            self._record_activation(activation, phase_kind)
             return {
                 "success": False,
                 "results": None,
                 "primary_metric": None,
-                "error": result.stderr
+                "error": result.stderr,
+                "activation": activation,
+            }
+
+        activation = finalize_runtime_probe(
+            repo=repo_path,
+            execution_dir=Path(execution_dir),
+            contract=activation_contract,
+        )
+        self._record_activation(activation, phase_kind)
+        if not activation["passed"]:
+            return {
+                "success": False,
+                "results": None,
+                "primary_metric": None,
+                "error": "INVALID_EXECUTION: required candidate code did not activate at runtime",
+                "activation": activation,
             }
 
         # 4.5 Run postprocess commands if old-format config has them
@@ -231,11 +398,58 @@ class BenchmarkExecutor:
             if osp.exists(fallback_full):
                 actual_output_path = fallback
 
-        return self._collect_results(run_id, execution_timestamp, actual_output_path)
+        collected = self._collect_results(run_id, execution_timestamp, actual_output_path)
+        collected["activation"] = activation
+        return collected
+
+    def execution_contract_summary(self) -> dict:
+        return {
+            "schema_version": "fml-execution-contract-summary-v1",
+            "execution_counts": dict(self.execution_counts),
+            "activation_records": list(self.activation_records),
+            "reproducibility_records": list(self.reproducibility_records),
+            "gpu_telemetry_summaries": list(self.gpu_telemetry_summaries),
+            "budget_ledger": self._capture_budget_ledger_snapshot(),
+        }
+
+    def _persist_execution_contract_summary(self) -> Optional[str]:
+        if not self.workspace_dir:
+            return None
+        workspace = Path(self.workspace_dir)
+        workspace.mkdir(parents=True, exist_ok=True)
+        path = workspace / "execution_contract_summary.json"
+        payload = self.execution_contract_summary()
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        return str(path)
 
     def cleanup(self):
         """Clean workspace and restore git state."""
+        self._persist_execution_contract_summary()
         self._reset_git()
+
+    def _effective_command_timeout(self) -> float | None:
+        """Cap a node command by the run's live remaining wall-clock budget."""
+        configured = None if self.timeout is None else float(self.timeout)
+        ledger = current_budget_ledger()
+        if ledger is None:
+            return configured
+        remaining = ledger.remaining("wall_clock_seconds")
+        if remaining is None:
+            return configured
+        if remaining <= 0:
+            ledger.assert_available("wall_clock_seconds", 0.001)
+        return remaining if configured is None else min(configured, remaining)
+
+    def _admit_phase_budget(self, phase_kind: str, ledger) -> None:
+        """Reserve enough live wall budget for a mandatory same-seed repeat."""
+        if phase_kind != "pre_test_val" or ledger is None:
+            return
+        observed = self.phase_command_durations.get("val") or []
+        if observed:
+            # The repeat executes the same validation command. A small fixed
+            # allowance covers harness finalization without inventing a score-
+            # dependent duration model.
+            ledger.assert_available("wall_clock_seconds", max(observed) + 30.0)
 
     def _run_command(self, command: str) -> SubprocessResult:
         """
@@ -253,6 +467,8 @@ class BenchmarkExecutor:
         full_cmd = ["conda", "run", "--no-capture-output", "-n", self.conda_env, "bash", "-c", command]
 
         try:
+            effective_timeout = self._effective_command_timeout()
+            command_started = time.monotonic()
             print(f"Running command: {' '.join(full_cmd)}")
             print(f"Current working directory: {osp.abspath(self.repo_dir)}")
 
@@ -265,18 +481,22 @@ class BenchmarkExecutor:
                 preexec_fn=os.setpgrp,  # Create new process group
             )
             self._current_proc = proc
-            stdout, stderr = proc.communicate(timeout=self.timeout)
+            stdout, stderr = proc.communicate(timeout=effective_timeout)
+            self._last_command_duration_seconds = time.monotonic() - command_started
             self._current_proc = None
             return SubprocessResult(proc.returncode, stdout=stdout, stderr=stderr)
 
         except subprocess.TimeoutExpired:
-            print(f"Command timed out after {self.timeout} seconds")
+            self._last_command_duration_seconds = time.monotonic() - command_started
+            print(f"Command timed out after {effective_timeout} seconds")
             self._current_proc = None
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)  # Kill entire group
             proc.wait()
-            return SubprocessResult(1, stderr=f"Timeout after {self.timeout} seconds")
+            return SubprocessResult(1, stderr=f"Timeout after {effective_timeout} seconds")
 
         except Exception as e:
+            if "command_started" in locals():
+                self._last_command_duration_seconds = time.monotonic() - command_started
             self._current_proc = None
             print(f"Error running command: {e}")
             return SubprocessResult(1, stderr=str(e))

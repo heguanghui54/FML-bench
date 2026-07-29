@@ -11,6 +11,7 @@ from .aira_mcts.agent import AIRAMCTSAgent
 from .openevolve.agent import OpenEvolveAgent
 from .autoresearch.agent import AutoresearchAgent
 from .adaptivesearch.agent import AdaptiveSearchAgent
+from .adaptive_pipeline.agent import AdaptivePipelineAgent
 
 
 class AgentRegistry:
@@ -45,3 +46,4 @@ AgentRegistry.register(AgentType.AIRA_MCTS, AIRAMCTSAgent)
 AgentRegistry.register(AgentType.OPENEVOLVE, OpenEvolveAgent)
 AgentRegistry.register(AgentType.AUTORESEARCH, AutoresearchAgent)
 AgentRegistry.register(AgentType.ADAPTIVESEARCH, AdaptiveSearchAgent)
+AgentRegistry.register(AgentType.ADAPTIVE_PIPELINE, AdaptivePipelineAgent)

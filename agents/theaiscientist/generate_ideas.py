@@ -133,6 +133,7 @@ def generate_ideas(
                 model=model,
                 system_message=idea_system_prompt,
                 msg_history=msg_history,
+                budget_category="proposal",
             )
             print(f"Tokens: {usage_info['total_tokens']} sent, {usage_info['completion_tokens']} received.")
             log_token_usage(usage_info, "idea_generation")
@@ -154,6 +155,7 @@ def generate_ideas(
                         model=model,
                         system_message=idea_system_prompt,
                         msg_history=msg_history,
+                        budget_category="review",
                     )
                     print(f"Tokens: {usage_info['total_tokens']} sent, {usage_info['completion_tokens']} received.")
                     log_token_usage(usage_info, "idea_reflection")
@@ -569,4 +571,3 @@ if __name__ == "__main__":
             client=client,
             model=client_model,
         )
-

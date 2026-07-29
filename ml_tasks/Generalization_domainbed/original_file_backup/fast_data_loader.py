@@ -2,6 +2,13 @@
 
 import torch
 
+
+def _shutdown_iterator(iterator):
+    """Stop DataLoader workers deterministically instead of waiting at exit."""
+    shutdown = getattr(iterator, "_shutdown_workers", None)
+    if callable(shutdown):
+        shutdown()
+
 class _InfiniteSampler(torch.utils.data.Sampler):
     """Wraps another Sampler to yield an infinite stream."""
     def __init__(self, sampler):
@@ -45,6 +52,9 @@ class InfiniteDataLoader:
     def __len__(self):
         raise ValueError
 
+    def close(self):
+        _shutdown_iterator(self._infinite_iterator)
+
 
 class InfiniteDataLoaderWithoutReplacement:
     def __init__(self, dataset, weights, batch_size, num_workers):
@@ -79,6 +89,9 @@ class InfiniteDataLoaderWithoutReplacement:
     def __len__(self):
         raise ValueError
 
+    def close(self):
+        _shutdown_iterator(self._infinite_iterator)
+
 
 
 class FastDataLoader:
@@ -107,3 +120,6 @@ class FastDataLoader:
 
     def __len__(self):
         return self._length
+
+    def close(self):
+        _shutdown_iterator(self._infinite_iterator)

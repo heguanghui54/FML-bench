@@ -327,17 +327,32 @@ provider) stays the same.
 ## Self-evolving research-to-paper control plane
 
 This fork's `self-evolving-ml-scientist` branch adds an auditable control plane
-that catalogs every FML agent/task/metric, plans a unified experiment-to-paper
-DAG, freezes a balanced replicated experiment protocol, records real result
-provenance and statistical figures, performs matched seed-block comparisons with
-task-heterogeneity and scorer-sensitivity audits, and evolves four skill channels
-only after downstream evidence passes promotion gates.
+that learns FML agents, tasks, metrics, prior evidence, and governed skills into
+a typed knowledge graph. Each source agent remains a provenance bundle, while
+its state, proposal, selection, debugging, memory, and diversity policies are
+independent graph nodes. Stage 3 builds one task-conditioned conditional
+experiment-to-paper DAG whose research nodes compose compatible atomic policies
+from a frozen graph using only stage-visible evidence. The system freezes a balanced replicated protocol,
+records real result provenance and statistical figures, performs matched
+seed-block comparisons with task-heterogeneity and scorer-sensitivity audits,
+and runs a post-arm `Read → Write → Assess → Govern` lifecycle over enriched
+state transitions. It distills `CREATE`, `PATCH`, or `NONE` candidates into
+general, task-specific, and action branches, then evolves four skill channels
+only after later held-out downstream evidence passes promotion gates. A node-level pass cannot credit every selected policy: each applied
+policy requires its own role, status, gate checks, and evidence references.
+Protected-test metrics never route the search controller.
+They are also forbidden from evolving future search skills.
 
 ```bash
 python3 -m ml_scientist.cli bootstrap \
   --out artifacts/ml_scientist/bootstrap \
   --results benchmark_results
 ```
+
+Bootstrap also writes `benchmark_contracts/`, `knowledge_graph/`, graph-bound
+Stage-3 plans, and a self-contained HTML architecture checkpoint under
+`reports/`. The prior `memory_registry.json` is retained as a compatibility
+view whose canonical store is the graph.
 
 The generated protocol intentionally contains `SET_MODEL` and cannot execute
 until a single provider/model is frozen. See

@@ -242,6 +242,7 @@ class Journal:
                     "You are an experienced AI researcher summarizing "
                     "experimental progress."
                 ),
+                budget_category="review",
             )
             if usage:
                 token_log.append(usage)
@@ -918,6 +919,7 @@ class AIScientistV2Agent(BaseAgent):
                     "You are an experienced AI researcher evaluating "
                     "experiment results."
                 ),
+                budget_category="review",
             )
             if usage:
                 self.token_usage_log.append(usage)

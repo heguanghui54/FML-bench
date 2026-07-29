@@ -1,0 +1,18 @@
+# Local extension: graph-bound atomic-policy composition with evidence gates.
+# Kept outside configs/agents so the published seven-baseline catalog is stable.
+agent:
+  type: adaptive_pipeline
+  adaptive_pipeline:
+    max_debug_retries: 1
+    max_stderr_output: 1500
+    # A single PrivacyMeter validation takes roughly 30 minutes at full GPU
+    # duty. Thermal pacing can extend wall time while preserving the exact
+    # computation, so keep the node timeout inside the shared 7,200-second
+    # ledger instead of imposing a task-specific 2,400-second false failure.
+    execute_timeout: 6600
+    max_steps: 1
+    token_budget: 120000
+    wall_clock_seconds: 7200
+    budget_profile: "matched-v1"
+    graph_path: "artifacts/ml_scientist/post_arm/knowledge_graph/final_graph_snapshot/knowledge_graph.json"
+    plan_root: "artifacts/ml_scientist/bootstrap/plans"

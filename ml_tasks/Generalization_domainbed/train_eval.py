@@ -11,9 +11,62 @@ The holdout_fraction=0.3 splits each domain into 30% out-split and 70% in-split.
 import argparse
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
+import time
+
+
+def _write_teardown_record(output_dir, *, mode, child_returncode, grace_seconds):
+    os.makedirs(output_dir, exist_ok=True)
+    path = os.path.join(output_dir, "teardown_info.json")
+    with open(path, "w") as f:
+        json.dump({
+            "schema_version": "domainbed-training-teardown-v1",
+            "mode": mode,
+            "child_returncode": child_returncode,
+            "grace_seconds": grace_seconds,
+            "required_artifacts_complete": all(os.path.isfile(os.path.join(output_dir, name)) for name in (
+                "done", "results.jsonl", "model.pkl"
+            )),
+        }, f, indent=2)
+
+
+def wait_for_training_process(process, output_dir, grace_seconds=10.0):
+    """Accept a controlled teardown only after every training artifact exists."""
+    required = [os.path.join(output_dir, name) for name in ("done", "results.jsonl", "model.pkl")]
+    while True:
+        returncode = process.poll()
+        if returncode is not None:
+            _write_teardown_record(
+                output_dir,
+                mode="NATURAL_EXIT",
+                child_returncode=returncode,
+                grace_seconds=grace_seconds,
+            )
+            return returncode
+        if all(os.path.isfile(path) for path in required):
+            try:
+                returncode = process.wait(timeout=grace_seconds)
+                mode = "NATURAL_EXIT_AFTER_DONE"
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait()
+                returncode = 0
+                mode = "CONTROLLED_TERMINATION_AFTER_COMPLETE_ARTIFACTS"
+            _write_teardown_record(
+                output_dir,
+                mode=mode,
+                child_returncode=returncode,
+                grace_seconds=grace_seconds,
+            )
+            return returncode
+        time.sleep(0.25)
 
 
 def run_training(output_dir="./results_tmp"):
@@ -28,8 +81,13 @@ def run_training(output_dir="./results_tmp"):
         "--output_dir", output_dir,
     ]
     print(f"Running: {' '.join(cmd)}")
-    result = subprocess.run(cmd, capture_output=False)
-    return result.returncode
+    process = subprocess.Popen(cmd, start_new_session=True)
+    try:
+        return wait_for_training_process(process, output_dir)
+    except BaseException:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGTERM)
+        raise
 
 
 def extract_metrics(output_dir, split):

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .published_prior import task_card_rows
+from .execution_contracts import normalize_summary_contract
 
 
 OKABE_ITO = ["#0072B2", "#E69F00", "#009E73", "#D55E00", "#CC79A7", "#56B4E9", "#000000"]
@@ -239,8 +240,16 @@ def collect_experiment_records(
     if not results_root.exists():
         return records
     for summary_path in sorted(results_root.rglob("summary.json")):
+        validity_path = summary_path.parent / "campaign_validity.json"
+        if validity_path.is_file():
+            try:
+                validity = json.loads(validity_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if validity.get("paper_result_eligible") is not True:
+                continue
         try:
-            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary = normalize_summary_contract(json.loads(summary_path.read_text(encoding="utf-8")))
         except (OSError, json.JSONDecodeError):
             continue
         test_result = summary.get("test_result") or {}
@@ -282,6 +291,12 @@ def collect_experiment_records(
                 "total_ideas": summary.get("total_ideas"),
                 "total_duration_seconds": summary.get("total_duration_seconds"),
                 "total_tokens": (summary.get("token_usage") or {}).get("total_tokens"),
+                "resource_accounting_status": summary.get("resource_accounting_status"),
+                "resource_matched_comparable": summary.get("resource_matched_comparable", False),
+                "candidate_validation_count": (summary.get("execution_counts") or {}).get("candidate_validation_count"),
+                "pre_test_validation_count": (summary.get("execution_counts") or {}).get("pre_test_validation_count"),
+                "protected_test_count": (summary.get("execution_counts") or {}).get("protected_test_count"),
+                "gpu_active_seconds": (summary.get("budget_ledger") or {}).get("usage", {}).get("gpu_active_seconds"),
                 "summary_path": str(summary_path),
                 "summary_sha256": _hash(summary_path),
             }
@@ -1104,7 +1119,7 @@ def write_experiment_artifacts(
     _write_csv(
         out_dir / "experiment_records.csv",
         records,
-        ["agent", "task", "phase", "trial", "experimental_seed", "workspace_label", "harness_git_commit", "model", "provider", "baseline_primary_metric", "best_val_metric", "test_metric", "test_success", "fml_credit_metric", "fml_credit_status", "normalized_improvement", "total_steps", "total_ideas", "total_duration_seconds", "total_tokens", "summary_path", "summary_sha256"],
+        ["agent", "task", "phase", "trial", "experimental_seed", "workspace_label", "harness_git_commit", "model", "provider", "baseline_primary_metric", "best_val_metric", "test_metric", "test_success", "fml_credit_metric", "fml_credit_status", "normalized_improvement", "total_steps", "total_ideas", "total_duration_seconds", "total_tokens", "resource_accounting_status", "resource_matched_comparable", "candidate_validation_count", "pre_test_validation_count", "protected_test_count", "gpu_active_seconds", "summary_path", "summary_sha256"],
     )
     integrity_issues = audit_experiment_cells(records)
     _write_csv(

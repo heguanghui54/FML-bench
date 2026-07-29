@@ -1,0 +1,32 @@
+{
+  "schema_version": "self-evolving-ml-system-atlas-sources-v1",
+  "generated_at": "2026-07-28T00:00:00+08:00",
+  "artifact": "docs/reports/self_evolving_ml_system_atlas_zh_20260728.html",
+  "scope": "Current checkpoint only; confirmatory experiments and final paper claims remain locked.",
+  "facts": {
+    "agents": 7,
+    "tasks": 18,
+    "lite_tasks_ready": 8,
+    "knowledge_graph_nodes": 303,
+    "knowledge_graph_edges": 671,
+    "protected_metrics": 19,
+    "pilot_selected_runs": 14,
+    "pilot_completed_runs": 9,
+    "pilot_remaining_runs": 5,
+    "replicated_groups": 0,
+    "paper_gates_passed": 1,
+    "paper_gates_total": 10,
+    "planned_records": 182
+  },
+  "sources": [
+    {"path": "README.md", "use": "FML-bench scope, agents, tasks, execution interface"},
+    {"path": "docs/self_evolving_ml_scientist.md", "use": "control-plane architecture, stages, protected-test and paper gates"},
+    {"path": "artifacts/ml_scientist/bootstrap/knowledge_graph/validation_report.json", "use": "graph validation and counts"},
+    {"path": "artifacts/ml_scientist/codex_ssh_protocol/preflight.json", "use": "remote and FML-Lite environment readiness"},
+    {"path": "artifacts/ml_scientist/codex_ssh_protocol/pilot_campaign_v1/campaign_state.json", "use": "pilot progress"},
+    {"path": "artifacts/ml_scientist/pilot_live_report/experiment_dataset_status.json", "use": "ingested records, replication and process-metric status"},
+    {"path": "artifacts/ml_scientist/pilot_live_report/experiment_records.csv", "use": "run-level pilot observations"},
+    {"path": "artifacts/ml_scientist/bootstrap/paper/paper_readiness.json", "use": "paper readiness gates and locked stage"},
+    {"path": "artifacts/ml_scientist/codex_ssh_protocol/run_matrix.csv", "use": "preregistered run count and execution contracts"}
+  ]
+}

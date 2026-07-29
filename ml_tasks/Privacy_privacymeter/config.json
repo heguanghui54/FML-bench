@@ -4,10 +4,17 @@
     "conda_env": "privacy_meter",
     "target_files": [
         "trainers/default_trainer.py",
-        "models/wide_resnet.py"
+        "models/wide_resnet.py",
+        "configs/cifar10_benchmark.yaml"
     ],
-    "val_command": "cp ../../../ml_tasks/Privacy_privacymeter/original_file_backup/models/utils.py ./models/ && cp ../../../ml_tasks/Privacy_privacymeter/original_file_backup/audit.py ./ && cp ../../../ml_tasks/Privacy_privacymeter/original_file_backup/util.py ./ && cp ../../../ml_tasks/Privacy_privacymeter/original_file_backup/get_signals.py ./ && cp ../../../ml_tasks/Privacy_privacymeter/original_file_backup/run_mia.py ./ && cp ../../../ml_tasks/Privacy_privacymeter/cifar10_benchmark.yaml ./configs/ && python run_mia.py --cf configs/cifar10_benchmark.yaml && cp ../../../ml_tasks/Privacy_privacymeter/postprocess.py ./ && python postprocess.py --exp_dir results_tmp --split val && rm postprocess.py && mkdir -p model_checkpoint && cp -r results_tmp/report model_checkpoint/",
-    "test_command": "cp ../../../ml_tasks/Privacy_privacymeter/original_file_backup/models/utils.py ./models/ && cp ../../../ml_tasks/Privacy_privacymeter/original_file_backup/audit.py ./ && cp ../../../ml_tasks/Privacy_privacymeter/original_file_backup/util.py ./ && cp ../../../ml_tasks/Privacy_privacymeter/original_file_backup/get_signals.py ./ && cp ../../../ml_tasks/Privacy_privacymeter/original_file_backup/run_mia.py ./ && cp ../../../ml_tasks/Privacy_privacymeter/cifar10_benchmark.yaml ./configs/ && mkdir -p results_tmp && cp -r model_checkpoint/report results_tmp/ && cp ../../../ml_tasks/Privacy_privacymeter/postprocess.py ./ && python postprocess.py --exp_dir results_tmp --split test && rm postprocess.py",
+    "candidate_config_files": [
+        {
+            "source": "cifar10_benchmark.yaml",
+            "target": "configs/cifar10_benchmark.yaml"
+        }
+    ],
+    "val_command": "cp ../../../ml_tasks/Privacy_privacymeter/original_file_backup/models/utils.py ./models/ && cp ../../../ml_tasks/Privacy_privacymeter/original_file_backup/audit.py ./ && cp ../../../ml_tasks/Privacy_privacymeter/original_file_backup/util.py ./ && cp ../../../ml_tasks/Privacy_privacymeter/original_file_backup/get_signals.py ./ && cp ../../../ml_tasks/Privacy_privacymeter/original_file_backup/run_mia.py ./ && python run_mia.py --cf configs/cifar10_benchmark.yaml && cp ../../../ml_tasks/Privacy_privacymeter/postprocess.py ./ && python postprocess.py --exp_dir results_tmp --split val && rm postprocess.py && mkdir -p model_checkpoint && cp -r results_tmp/report model_checkpoint/",
+    "test_command": "cp ../../../ml_tasks/Privacy_privacymeter/original_file_backup/models/utils.py ./models/ && cp ../../../ml_tasks/Privacy_privacymeter/original_file_backup/audit.py ./ && cp ../../../ml_tasks/Privacy_privacymeter/original_file_backup/util.py ./ && cp ../../../ml_tasks/Privacy_privacymeter/original_file_backup/get_signals.py ./ && cp ../../../ml_tasks/Privacy_privacymeter/original_file_backup/run_mia.py ./ && mkdir -p results_tmp && cp -r model_checkpoint/report results_tmp/ && cp ../../../ml_tasks/Privacy_privacymeter/postprocess.py ./ && python postprocess.py --exp_dir results_tmp --split test && rm postprocess.py",
     "metric": "AUC_gap_mean",
     "metric_direction": "lower"
 }

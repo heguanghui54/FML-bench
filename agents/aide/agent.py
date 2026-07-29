@@ -581,6 +581,7 @@ class AIDEAgent(BaseAgent):
                     "You are an experienced AI researcher evaluating "
                     "experiment results."
                 ),
+                budget_category="review",
             )
             if usage:
                 self.token_usage_log.append(usage)

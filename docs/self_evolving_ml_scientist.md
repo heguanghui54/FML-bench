@@ -1,21 +1,41 @@
 # Self-Evolving ML Scientist
 
 This branch adds a provenance-first control plane around FML-bench. It learns
-the checked-out agent, task, metric, and baseline contracts; plans one unified
-research-and-paper dependency graph at Stage 3; gives every node a type-specific
-inner execution/review loop; and emits paper-ready data tables and vector
-figures without fabricating missing experiments.
+the checked-out agent, task, metric, and baseline contracts into a typed
+knowledge graph; freezes that graph for each arm; plans one task-conditioned
+conditional research-and-paper graph at Stage 3; composes node-local atomic
+policies from visible evidence; gives every node a type-specific inner execution/review
+loop; and emits paper-ready data tables and vector figures without fabricating
+missing experiments.
 
 ## Outer stages
 
 0. Freeze retrievable memory and the four skill registries.
 1. Freeze research, evaluation, budget, and publication claim contracts.
-2. Select ML methods, baseline-agent search operators, reviewers, and skills.
+2. Retrieve stage-eligible state, proposal, selection, debugging, memory, and diversity policies, plus reviewers and skills.
 3. Plan the complete experiment-to-paper DAG and every task-local OR tree.
 4. Execute dependency-ready candidates.
 5. Apply node-specific metrics, scientific reviewers, and integrity gates.
 6. Advance, refine, replicate, debug, backtrack, or create a versioned amendment.
-7. Freeze evidence and govern research, research-review, writing, and paper-review skills.
+7. Gate completed transitions, distill skills, assess contextual utility, and govern research, research-review, writing, and paper-review skills.
+
+Stage 3 produces one conditional pipeline per research job. A complete baseline
+agent is retained as a provenance bundle and known-compatible reference
+composition, but it is not the selectable unit for research nodes. Instead,
+state, proposal, selection, debugging, memory, and diversity mechanisms are
+typed `Policy` nodes. Each executable research node carries role-specific
+candidate pools, capability requirements, and a frozen metric-visibility
+contract. The controller selects one policy per required role and rejects
+compositions with missing state or conflicting capabilities. Full-pipeline
+variants remain available only for explicit, preregistered pipeline ablations.
+
+Every selected policy must produce a trace row containing its role, whether it
+was applied, a `PASSED`, `FAILED`, `NOT_APPLIED`, or `INCONCLUSIVE` status,
+role-specific gate checks, and evidence artifact references. A node-level pass
+does not silently promote every component. Only explicit applied-policy traces
+are aggregated into future policy success or failure counts, and those counts
+remain separated by node type so hypothesis evidence cannot silently become
+code or experiment evidence.
 
 The final paper-writing node exists from Stage 3 but is locked behind the
 frozen final evidence bundle. Provisional outline and method-description nodes
@@ -69,13 +89,136 @@ This writes:
 - a frozen retrieval snapshot, append-only skill-evolution event ledger, and
   four separate project-local registries for research execution, research
   review, paper writing, and paper review.
+- `benchmark_contracts/`, where validation-visible, post-stage, protected-final,
+  paper-review, and operator-only metric views are kept distinct;
+- `knowledge_graph/knowledge_graph.json`, the canonical typed memory migrated
+  from the prior registry, source-grounded agent/task dossiers, decomposed
+  baseline-policy ontology, metric audit,
+  benchmark contracts, paper-quality protocol, and skill registry;
+- task-conditioned Stage-3 plans bound to the frozen graph content hash;
+- `reports/adaptive_pipeline_checkpoint.html`, a self-contained architecture
+  and memory-migration checkpoint report.
 
-Skill maturity is evidence-gated: source audits remain observations; one real
+Skill maturity is evidence-gated: source audits and newly distilled candidates remain observations; one later held-out
 complete downstream no-regression pass permits provisional success; two
-materially distinct complete passes permit repeated success. Contradictions
+materially distinct held-out complete passes permit repeated success. An authoring episode cannot validate its own candidate. Contradictions
 remain in history and roll the active rule back. A captured global-skill base
 checksum must still match before promotion, and an experiment arm cannot see
 memory or skill writes made after its snapshot was frozen.
+
+## Learn additional benchmarks and metrics
+
+The checked-out FML source is learned and verified during bootstrap. A new
+user-supplied benchmark manifest enters as an observation and cannot become
+active merely because its JSON shape is valid:
+
+```bash
+python3 -m ml_scientist.cli benchmark-learn \
+  --source path/to/new_benchmark_contract.json \
+  --out artifacts/ml_scientist/bootstrap/benchmark_contracts
+```
+
+Activation additionally requires implementation-audit and boundary-test
+evidence. Protected-final metrics are structurally forbidden from search
+routing. Metric semantics are versioned; a corrected metric supersedes rather
+than silently overwrites an already frozen campaign definition.
+
+## Build, validate, and query graph memory
+
+```bash
+python3 -m ml_scientist.cli memory-build-graph \
+  --artifact-root artifacts/ml_scientist/bootstrap \
+  --out artifacts/ml_scientist/bootstrap/knowledge_graph
+
+python3 -m ml_scientist.cli memory-validate-graph \
+  --graph artifacts/ml_scientist/bootstrap/knowledge_graph/knowledge_graph.json
+
+python3 -m ml_scientist.cli memory-query-graph \
+  --graph artifacts/ml_scientist/bootstrap/knowledge_graph/knowledge_graph.json \
+  --query "privacy low diversity limited budget" \
+  --type Policy \
+  --stage code_modification
+```
+
+The old `governance/memory_registry.json` remains only as a compatibility view
+and points to the graph as its canonical store. The execution DAG is deliberately
+separate from this persistent semantic graph.
+
+Completed decision episodes are appended after an arm and become visible only
+to a future snapshot:
+
+```bash
+python3 -m ml_scientist.cli memory-append-episode \
+  --episodes artifacts/ml_scientist/bootstrap/knowledge_graph/episodes.jsonl \
+  --input completed_episode.json
+```
+
+Enriched episodes include the user research request and task family, state and
+visible evidence before the decision, selected policies, route and state after
+the decision, executor-reported or derived token/GPU/wall-time/diversity
+telemetry, evidence artifacts, role-level policy traces, and optional structured
+learning signals. The post-arm lifecycle is invoked explicitly:
+
+```bash
+python3 -m ml_scientist.cli skill-evolve \
+  --episodes artifacts/ml_scientist/bootstrap/knowledge_graph/episodes.jsonl \
+  --governance-root artifacts/ml_scientist/bootstrap/governance \
+  --out artifacts/ml_scientist/bootstrap/skill_evolution
+```
+
+The writer uses an informative-trajectory gate and a two-pass analysis/mutation
+contract. Each applied policy emits `CREATE`, `PATCH`, or `NONE`; a candidate
+must contain a measurable trigger, ordered procedure, applicability branch and
+stage, expected effect, acceptance gates, and rollback condition. Exact
+duplicates are ignored and close matches become non-active patch versions.
+Writes enter only the next frozen snapshot.
+When the planned `skill-evolution` node becomes dependency-ready,
+`adaptive-runtime-evolve` invokes the same engine, records the four lifecycle
+reports as node evidence, and completes or fails the Stage-7 gate without
+starting an experiment.
+
+Later held-out validation episodes update utility by research context and stage
+using reward relative to a context baseline. A complete no-regression pass can
+promote a candidate; a second materially distinct context can establish repeated
+success; comparable harmful evidence rolls the affected version back while
+retaining its negative history. Protected-final metrics cannot drive this loop.
+
+## Initialize the adaptive Stage 4-6 runtime
+
+Initializing or inspecting runtime state never launches an experiment. The
+executor remains a separate explicit action, which preserves the project pause
+boundary:
+
+```bash
+python3 -m ml_scientist.cli adaptive-runtime-init \
+  --plan artifacts/ml_scientist/bootstrap/plans/Privacy_privacymeter.json \
+  --graph artifacts/ml_scientist/bootstrap/knowledge_graph/knowledge_graph.json \
+  --run-id privacy-adaptive-001 \
+  --state artifacts/ml_scientist/adaptive_runs/privacy-adaptive-001/state.json
+```
+
+`adaptive-runtime-decide` records a compatible atomic-policy composition from a
+JSON list of visible metric evidence. Baseline bundles remain provenance only;
+the operator contract contains only the policies explicitly selected for the
+current node. The contract is suitable for the text-only Codex CLI during
+planning or for the existing `CodeEditor` on declared target files, but still
+requires an explicit executor call. `adaptive-runtime-record` accepts executor evidence and moves
+the node forward, retries, selects another policy composition, backtracks, or stops for
+budget. `adaptive-runtime-amend` routes paper-review errors to writing,
+statistics, experiment, replication, metric semantics, or code and invalidates
+dependent descendants when required.
+
+For an atomic-policy node, `adaptive-runtime-record` also requires
+`--policy-evaluations policy_trace.json`. The file must account for every
+selected role. Applied policies cannot receive success or failure credit without
+at least one evidence artifact reference. Non-applied policies receive no
+credit. Completed episodes expose those explicit role-level outcomes only to a
+future frozen graph snapshot.
+
+`adaptive-runtime-record` can additionally accept `--budget-after`,
+`--telemetry`, `--state-observations`, and `--skill-validation-evaluations` JSON
+files. `adaptive-runtime-export --node NODE --episodes episodes.jsonl` exports
+and appends the complete transition required by the skill-evolution engine.
 
 The default protocol contains `SET_MODEL` and is therefore a non-runnable
 template. Freeze it with one model/provider before execution:
@@ -108,6 +251,41 @@ python3 -m ml_scientist.cli campaign \
   --logs artifacts/ml_scientist/campaign-logs \
   --phase pilot --dry-run
 ```
+
+## Live campaign, trajectory bridge, and adaptive executor
+
+During a long frozen campaign, refresh the self-contained HTML and its machine-readable tables with:
+
+```bash
+python3 -m ml_scientist.cli fml-import-episodes \
+  --results benchmark_results/controlled \
+  --episodes artifacts/ml_scientist/trajectory_memory/baseline_observations.jsonl \
+  --graph artifacts/ml_scientist/bootstrap/knowledge_graph/knowledge_graph.json
+
+python3 -m ml_scientist.cli live-pipeline-report \
+  --results benchmark_results/controlled \
+  --campaign-dir artifacts/ml_scientist/codex_ssh_protocol/pilot_campaign_v1 \
+  --matrix artifacts/ml_scientist/codex_ssh_protocol/run_matrix.csv \
+  --graph artifacts/ml_scientist/bootstrap/knowledge_graph/knowledge_graph.json \
+  --issues artifacts/ml_scientist/pipeline_diagnostics/issue_registry.json \
+  --episodes artifacts/ml_scientist/trajectory_memory/baseline_observations.jsonl \
+  --new-pipeline-results benchmark_results/adaptive_pipeline \
+  --out artifacts/ml_scientist/reports/live-pipeline
+```
+
+Legacy FML summaries become bundle-level observation episodes only. The bridge
+does not invent atomic Policy credit or a learning signal. A separately labeled
+`adaptive_pipeline` summary can carry the executor's explicit atomic selection,
+post-execution assessment, reachability audit, and resource telemetry into an
+enriched episode. Planning and assessment are deliberately separate: the
+pre-execution operator declares `planned_policy_use`, while PASSED/FAILED credit
+and CREATE/PATCH/NONE signals are permitted only after real artifacts exist.
+
+The adaptive executor also checks token, wall-clock, and candidate-step budgets
+before calls, and rejects newly added Python functions with no call site in the
+allowed target-file set before validation. That static pilot gate catches the
+known unreachable-helper failure mode but does not replace the runtime marker
+required for confirmatory attribution.
 
 ## Run data ingestion after experiments
 

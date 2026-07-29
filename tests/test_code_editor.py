@@ -48,6 +48,10 @@ class CodeEditorPathParsingTests(unittest.TestCase):
             self.assertEqual(changed.read_text(), "value = 2\n")
             self.assertEqual(unchanged.read_text(), "stable = True\n")
 
+    def test_non_python_targets_are_not_parsed_as_python(self):
+        self.assertTrue(CodeEditor._syntax_ok("plain research notes", "notes.txt"))
+        self.assertFalse(CodeEditor._syntax_ok("def broken(", "model.py"))
+
 
 if __name__ == "__main__":
     unittest.main()

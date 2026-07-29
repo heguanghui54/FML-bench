@@ -4,14 +4,30 @@ import tempfile
 import unittest
 import csv
 import hashlib
+import io
 import json
 import shlex
+import signal
 import sys
 from pathlib import Path
+from unittest import mock
 
 from ml_scientist.catalog import build_catalog, load_simple_yaml
-from ml_scientist.campaign import CampaignError, _command_argv, load_run_matrix, run_campaign
-from ml_scientist.experiment_design import build_experiment_protocol, preflight_environment, write_experiment_protocol
+from ml_scientist.campaign import (
+    CampaignError,
+    _command_argv,
+    _run_logged_command,
+    _summary_validity,
+    load_run_matrix,
+    run_campaign,
+)
+from ml_scientist.experiment_design import (
+    build_experiment_protocol,
+    build_resource_matched_sensitivity_protocol,
+    build_heldout_transfer_protocol,
+    preflight_environment,
+    write_experiment_protocol,
+)
 from ml_scientist.governance import EvidenceGateError, EvidenceGatedSkillRegistry, initialize_governance_artifacts
 from ml_scientist.knowledge_base import build_agent_dossiers, build_metric_implementation_audit, build_task_dossiers, write_knowledge_base
 from ml_scientist.planner import build_research_paper_plan, validate_plan
@@ -136,6 +152,41 @@ class PlannerTests(unittest.TestCase):
         self.assertIn("separate local extension", nodes["paper-integrity"]["metadata"]["paper_metric_boundary"])
 
 
+class ResourceMatchedSensitivityTests(unittest.TestCase):
+    def test_separate_matrix_includes_all_baselines_and_adaptive_with_frozen_budget(self):
+        catalog = build_catalog(ROOT)
+        protocol, rows = build_resource_matched_sensitivity_protocol(catalog)
+        self.assertTrue(protocol["frozen_pilot_unchanged"])
+        self.assertEqual(len(protocol["agents"]), 8)
+        self.assertIn("adaptive_pipeline", protocol["agents"])
+        self.assertEqual(len(rows), 8 * 2 * 3)
+        self.assertTrue(all(row["budget_profile"] == "matched-v1" for row in rows))
+        self.assertTrue(all("--budget-profile matched-v1" in row["command"] for row in rows))
+        self.assertEqual(protocol["model"], "gpt-5.6-sol")
+        self.assertEqual({row["model"] for row in rows}, {"gpt-5.6-sol"})
+        self.assertTrue(all(row["command"].startswith(".controller-venv/bin/python ") for row in rows))
+        self.assertEqual(protocol["gpu_safety_contract"]["thermal_pacing_start_c"], 78)
+        self.assertEqual(protocol["seed_interpretation"]["role"], "controller and research-agent stochasticity")
+        self.assertTrue(all(row["agent_seed"] == row["seed"] for row in rows))
+        self.assertFalse(protocol["authorization"]["gpu_execution"])
+
+    def test_heldout_transfer_matrix_is_paper_eligible_and_score_independent(self):
+        catalog = build_catalog(ROOT)
+        protocol, rows = build_heldout_transfer_protocol(catalog)
+        self.assertEqual(len(rows), 8 * 2 * 3)
+        self.assertEqual(
+            set(protocol["heldout_tasks"]),
+            {"Privacy_opacus", "Generalization_domainbed_officehome"},
+        )
+        self.assertTrue(protocol["paper_claim_eligible"])
+        self.assertTrue(all(row["paper_claim_eligible"] for row in rows))
+        self.assertTrue(all(row["command"].startswith(".controller-venv/bin/python ") for row in rows))
+        self.assertTrue(all(row["budget_profile"] == "matched-v1" for row in rows))
+        self.assertIn("Before any held-out result", protocol["selection_rule"])
+        self.assertEqual(protocol["analysis_policy"]["unit"], "agent-task-agent_seed run")
+        self.assertFalse(protocol["authorization"]["cloud_purchase"])
+
+
 class ReportingTests(unittest.TestCase):
     def test_catalog_figures_and_empty_experiment_tables_are_honest(self):
         catalog = build_catalog(ROOT)
@@ -254,6 +305,13 @@ class ReportingTests(unittest.TestCase):
         self.assertIn("matched seed trial", protocol["estimand"]["primary_uncertainty_unit"])
         self.assertIn("Holm", protocol["primary_analysis"]["multiplicity"])
         self.assertFalse(protocol["sensitivity_analyses"][0]["replacement_allowed"])
+
+        heldout = build_statistical_analysis_protocol(
+            primary_phase="confirmatory_heldout_transfer",
+            suite_label="the two frozen held-out transfer tasks",
+        )
+        self.assertEqual(heldout["primary_analysis"]["phase"], "confirmatory_heldout_transfer")
+        self.assertIn("not independent model-training replication", heldout["estimand"]["task_seed_boundary"])
 
     def test_adaptive_opportunity_interaction_uses_new_outcomes_in_frozen_strata(self):
         tasks = [
@@ -568,6 +626,8 @@ class ExperimentDesignTests(unittest.TestCase):
         self.assertEqual(report["lite_environment_task_total"], 8)
         self.assertIn("ready_for_full_extension", report)
         self.assertIn("adaptivesearch_controller", report)
+        self.assertIn("heldout_data_ready", report)
+        self.assertIsNone(report["heldout_data_ready"])
         self.assertIn("weight_sha256", report["adaptivesearch_controller"])
         self.assertFalse(report["ready"])
 
@@ -600,10 +660,65 @@ class ExperimentDesignTests(unittest.TestCase):
             self.assertEqual(state["status_counts"], {"DRY_RUN_READY": 2})
             self.assertFalse(state["complete"])
 
+            json_matrix = root / "frozen" / "run_matrix.json"
+            csv_rows = load_run_matrix(root / "frozen" / "run_matrix.csv")
+            json_matrix.write_text(json.dumps(csv_rows), encoding="utf-8")
+            self.assertEqual(load_run_matrix(json_matrix), csv_rows)
+
     def test_campaign_reuses_the_active_controller_python(self):
         argv = _command_argv("python run_agent_benchmark.py --model fixed")
         self.assertEqual(argv[0], sys.executable)
         self.assertEqual(argv[1:], ["run_agent_benchmark.py", "--model", "fixed"])
+
+    def test_campaign_interrupt_terminates_owned_child_process_group(self):
+        process = mock.Mock()
+        process.pid = 4321
+        process.poll.return_value = None
+        process.wait.side_effect = [KeyboardInterrupt(), None]
+        with (
+            mock.patch("ml_scientist.campaign.subprocess.Popen", return_value=process) as popen,
+            mock.patch("ml_scientist.campaign.os.killpg") as killpg,
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            _run_logged_command(["python", "job.py"], cwd=ROOT, log_handle=io.StringIO())
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+        killpg.assert_called_once_with(4321, signal.SIGTERM)
+
+    def test_governed_campaign_requires_authorization_and_freezes_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            row = {
+                "run_id": "resource_matched_sensitivity-demo-task-trial01",
+                "phase": "resource_matched_sensitivity",
+                "agent": "demo",
+                "task": "task",
+                "trial": 1,
+                "seed": 1103,
+                "model": "fixed-model",
+                "provider": "CodexCLI",
+                "budget_profile": "matched-v1",
+                "result_root": "results",
+                "command": (
+                    "python run_agent_benchmark.py --budget-profile matched-v1 "
+                    "--eval-backend ssh --ssh-host ubuntu-heshi"
+                ),
+            }
+            matrix = root / "resource_matched_sensitivity_matrix.json"
+            matrix.write_text(json.dumps([row]), encoding="utf-8")
+            with self.assertRaisesRegex(CampaignError, "execution authorization"):
+                run_campaign(matrix_path=matrix, repo=root, log_dir=root / "logs", dry_run=True)
+            (root / "execution_authorization.json").write_text(json.dumps({
+                "authorized_scope": {
+                    "local_ubuntu_gpu_experiments": True,
+                    "resource_matched_sensitivity_campaign": True,
+                    "cloud_purchase": False,
+                    "restart_i4h_automatically": False,
+                }
+            }), encoding="utf-8")
+            (root / "resource_matched_sensitivity_protocol.json").write_text("{}", encoding="utf-8")
+            state = run_campaign(matrix_path=matrix, repo=root, log_dir=root / "logs", dry_run=True)
+            self.assertEqual(state["status_counts"], {"DRY_RUN_READY": 1})
+            self.assertTrue((root / "logs" / "campaign_execution_manifest.json").is_file())
 
     def test_campaign_records_started_event_and_live_state(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -647,6 +762,36 @@ class ExperimentDesignTests(unittest.TestCase):
             self.assertIsNone(state["current_run_id"])
             self.assertTrue(state["complete"])
 
+    def test_governed_summary_rejects_counted_validation_without_trajectory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            summary = Path(tmp) / "summary.json"
+            summary.write_text(json.dumps({
+                "schema_version": "fml-summary-v2",
+                "resource_accounting_status": "COMPLETE_V2",
+                "budget_ledger": {
+                    "profile_name": "matched-v1", "passed": True,
+                    "usage": {
+                        "candidate_validation_count": 1,
+                        "pre_test_validation_count": 0,
+                        "protected_test_count": 0,
+                    },
+                },
+                "execution_counts": {
+                    "candidate_validation_count": 1,
+                    "pre_test_validation_count": 0,
+                    "protected_test_count": 0,
+                },
+                "val_steps": [],
+                "candidate_activation": [],
+            }), encoding="utf-8")
+            validity = _summary_validity(summary, {
+                "phase": "confirmatory_heldout_transfer",
+            })
+
+        self.assertFalse(validity["paper_result_eligible"])
+        self.assertIn("COUNTED_VALIDATION_HAS_NO_TRAJECTORY_STEP", validity["reasons"])
+        self.assertIn("COUNTED_VALIDATION_HAS_INCOMPLETE_ACTIVATION_EVIDENCE", validity["reasons"])
+
 
 class SkillGovernanceTests(unittest.TestCase):
     def test_promotion_requires_real_downstream_evidence_and_distinct_contexts(self):
@@ -672,6 +817,7 @@ class SkillGovernanceTests(unittest.TestCase):
             registry.record_outcome(
                 skill_id="hs-test-rule", evidence_path=outcome_a, context_id="task-a",
                 real_downstream_complete=True, no_regression=True, metrics={"score": 1},
+                held_out_validation=True,
             )
             self.assertEqual(registry.promote("hs-test-rule"), "provisional_success")
             with self.assertRaises(EvidenceGateError):
@@ -679,6 +825,7 @@ class SkillGovernanceTests(unittest.TestCase):
             registry.record_outcome(
                 skill_id="hs-test-rule", evidence_path=outcome_b, context_id="task-b",
                 real_downstream_complete=True, no_regression=True, metrics={"score": 2},
+                held_out_validation=True,
             )
             self.assertEqual(registry.promote("hs-test-rule"), "repeated_success")
             snapshot = registry.snapshot(root / "snapshot.json")

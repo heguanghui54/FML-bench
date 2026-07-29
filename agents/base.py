@@ -28,6 +28,7 @@ class AgentType(Enum):
     OPENEVOLVE = "openevolve"
     AUTORESEARCH = "autoresearch"
     ADAPTIVESEARCH = "adaptivesearch"
+    ADAPTIVE_PIPELINE = "adaptive_pipeline"
 
 
 @dataclass
@@ -89,6 +90,8 @@ class BaseAgent(ABC):
         self.target_files: List[str] = []
         self._last_edit_result = None  # Full EditResult from last _edit_code() call
         self._last_val_duration: Optional[float] = None  # Wall-clock seconds for last _execute_val
+        self.budget_ledger = None
+        self._selected_validation_result: Optional[dict] = None
         # Metric info — set by agents during run() from benchmark_config
         self.metric_name: str = ""
         self.metric_direction: str = "higher"
@@ -161,6 +164,7 @@ class BaseAgent(ABC):
             if self._should_update_best(result["primary_metric"], self.best_metric):
                 self.best_metric = result["primary_metric"]
                 self.best_code_snapshot = self._snapshot_target_files()
+                self._selected_validation_result = result
 
         return result
 
@@ -188,8 +192,47 @@ class BaseAgent(ABC):
         saved_timeout = self.executor.timeout
         self.executor.timeout = None
         try:
-            self.executor.run_val(run_id="pre_test_val")
-            return self.executor.run_test(run_id="final_test")
+            pre_test_val = self.executor.run_val(run_id="pre_test_val")
+            if not pre_test_val.get("success"):
+                return {
+                    "success": False,
+                    "results": None,
+                    "primary_metric": None,
+                    "error": "PRE_TEST_VAL_FAILED: " + str(pre_test_val.get("error") or "unknown error"),
+                    "pre_test_val": pre_test_val,
+                    "protected_test_invoked": False,
+                }
+            from ml_scientist.execution_contracts import (
+                ReproducibilityContract,
+                compare_repeat_validations,
+            )
+            repro_cfg = self.config.runtime_params.get("reproducibility_contract", {})
+            comparison = compare_repeat_validations(
+                self._selected_validation_result,
+                pre_test_val,
+                ReproducibilityContract(
+                    mode=str(repro_cfg.get("mode", "repeat_guarded")),
+                    metric_absolute_tolerance=float(repro_cfg.get("metric_absolute_tolerance", 0.01)),
+                    require_same_constraint_classification=bool(
+                        repro_cfg.get("require_same_constraint_classification", True)
+                    ),
+                ),
+            )
+            if not comparison["passed"]:
+                return {
+                    "success": False,
+                    "results": None,
+                    "primary_metric": None,
+                    "error": "STOCHASTIC_UNCERTAIN: selected validation and pre-test validation disagree",
+                    "pre_test_val": pre_test_val,
+                    "reproducibility": comparison,
+                    "protected_test_invoked": False,
+                }
+            test_result = self.executor.run_test(run_id="final_test")
+            test_result["pre_test_val"] = pre_test_val
+            test_result["reproducibility"] = comparison
+            test_result["protected_test_invoked"] = True
+            return test_result
         finally:
             self.executor.timeout = saved_timeout
 
@@ -239,7 +282,8 @@ class BaseAgent(ABC):
 
     def budget_remaining(self) -> bool:
         """Return True if the step budget has not been exhausted."""
-        return self.step_count < self.step_budget
+        ledger_ok = self.budget_ledger is None or self.budget_ledger.passed()
+        return self.step_count < self.step_budget and ledger_ok
 
     # ------------------------------------------------------------------
     # Metric formatting (unified across all agents for fairness)

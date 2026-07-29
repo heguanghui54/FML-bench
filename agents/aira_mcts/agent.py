@@ -605,6 +605,7 @@ class AIRAMCTSAgent(BaseAgent):
                 model=self.config.model,
                 system_message="You are an ML experiment analyst. Be concise and actionable.",
                 print_debug=False,
+                budget_category="review",
             )
             if usage:
                 self.token_usage_log.append(usage)

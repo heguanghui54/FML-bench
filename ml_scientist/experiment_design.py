@@ -37,12 +37,17 @@ PROVIDER_KEYS = {
 # and one sparse-opportunity/higher-is-better task. Both are in FML-Lite and
 # have relatively high across-agent discrimination in the published aggregates.
 PILOT_TASKS = ("Privacy_privacymeter", "Generalization_domainbed")
+# Paper-eligible transfer confirmation uses the untouched paired tasks in the
+# same two domains.  The selection rule is structural (paired implementation /
+# dataset), not based on observed scores from the development tasks.
+HELDOUT_TRANSFER_TASKS = ("Privacy_opacus", "Generalization_domainbed_officehome")
 DEFAULT_TRIAL_SEEDS = (1103, 2207, 3301)
 EXECUTION_ORDER_SEED = 20260727
 ADAPTIVESEARCH_CONTROLLER_PACKAGES = {
     "torch": "2.10.0",
     "transformers": "5.3.0",
 }
+CONTROLLER_PYTHON = ".controller-venv/bin/python"
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -72,11 +77,12 @@ def _command(
     eval_backend: str,
     ssh_host: str,
     remote_project_root: str,
+    budget_profile: str = "legacy-unbounded",
 ) -> str:
     label = f"{phase}-{agent['agent_id']}-{task['task_id']}-trial{trial:02d}"
     trial_output = f"{output_dir}/{phase}/trial_{trial:02d}"
     args = [
-        "python",
+        CONTROLLER_PYTHON,
         "run_agent_benchmark.py",
         "--agent-config",
         agent["config"],
@@ -92,6 +98,8 @@ def _command(
         label,
         "--output-dir",
         trial_output,
+        "--budget-profile",
+        budget_profile,
     ]
     if eval_backend != "local":
         args.extend(["--eval-backend", eval_backend])
@@ -122,6 +130,7 @@ def _phase_rows(
     eval_backend: str,
     ssh_host: str,
     remote_project_root: str,
+    budget_profile: str = "legacy-unbounded",
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for agent in agents:
@@ -139,10 +148,14 @@ def _phase_rows(
                         "lite": task["lite"],
                         "trial": trial,
                         "seed": seed,
+                        "agent_seed": seed,
+                        "seed_role": "controller_and_research_agent_randomness",
+                        "task_evaluation_seed_policy": "benchmark_owned_frozen_seed",
                         "model": model,
                         "provider": provider,
                         "max_steps": max_steps,
                         "protected_test_max_runs": 1,
+                        "budget_profile": budget_profile,
                         "paper_claim_eligible": phase.startswith("confirmatory_"),
                         "evidence_class": (
                             "confirmatory_new_evidence"
@@ -164,10 +177,243 @@ def _phase_rows(
                             eval_backend=eval_backend,
                             ssh_host=ssh_host,
                             remote_project_root=remote_project_root,
+                            budget_profile=budget_profile,
                         ),
                     }
                 )
     return rows
+
+
+def build_resource_matched_sensitivity_protocol(
+    catalog: dict[str, Any],
+    *,
+    model: str = "gpt-5.6-sol",
+    provider: str = "CodexCLI",
+    output_dir: str = "benchmark_results/resource_matched_sensitivity",
+    trial_seeds: tuple[int, ...] = DEFAULT_TRIAL_SEEDS,
+    eval_backend: str = "ssh",
+    ssh_host: str = "ubuntu-heshi",
+    remote_project_root: str = "/media/heshi/game/fml-scientist/repo",
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Build a new comparison matrix without modifying the frozen 14-run pilot."""
+    task_by_id = {task["task_id"]: task for task in catalog["tasks"]}
+    tasks = [task_by_id[task_id] for task_id in PILOT_TASKS]
+    agents = list(catalog["agents"]) + [{
+        "agent_id": "adaptive_pipeline",
+        "display_name": "Graph-bound adaptive pipeline",
+        "strategy_family": "graph_memory_adaptive_composition",
+        "config": "configs/local_extensions/adaptive_pipeline.yaml",
+    }]
+    trials = tuple(range(1, len(trial_seeds) + 1))
+    rows = _phase_rows(
+        phase="resource_matched_sensitivity",
+        agents=agents,
+        tasks=tasks,
+        trials=trials,
+        seeds=trial_seeds,
+        max_steps=8,
+        model=model,
+        provider=provider,
+        output_dir=output_dir,
+        eval_backend=eval_backend,
+        ssh_host=ssh_host,
+        remote_project_root=remote_project_root,
+        budget_profile="matched-v1",
+    )
+    rows = _freeze_execution_order(rows)
+    protocol = {
+        "schema_version": "fml-resource-matched-sensitivity-protocol-v1",
+        "status": "FROZEN_AWAITING_EXPLICIT_GPU_AUTHORIZATION",
+        "frozen_pilot_unchanged": True,
+        "result_root": output_dir,
+        "condition_label": "resource_matched_sensitivity",
+        "model": model,
+        "provider": provider,
+        "controller_python": CONTROLLER_PYTHON,
+        "agents": [row["agent_id"] for row in agents],
+        "tasks": list(PILOT_TASKS),
+        "trial_seeds": list(trial_seeds),
+        "seed_interpretation": {
+            "role": "controller and research-agent stochasticity",
+            "not_claimed_as": "independent task-training seeds",
+            "task_evaluation_seed_policy": (
+                "Each benchmark retains its checked-in fixed split/training seed; "
+                "the same task seed is shared across agents and agent trials."
+            ),
+            "replication_unit": "matched research-agent trial block",
+        },
+        "budget_profile": {
+            "name": "matched-v1",
+            "tokens": 120000,
+            "wall_clock_seconds": 7200,
+            "proposals": 8,
+            "reviews": 8,
+            "candidate_validations": 1,
+            "pre_test_validations": 1,
+            "protected_tests": 1,
+        },
+        "gpu_safety_contract": {
+            "sample_seconds": 5,
+            "warning_temperature_c": 82,
+            "abort_temperature_c": 88,
+            "thermal_throttle_abort_samples": 3,
+            "thermal_pacing_enabled": True,
+            "thermal_pacing_start_c": 78,
+            "thermal_pacing_resume_c": 72,
+        },
+        "fairness_gate": "every included arm must have COMPLETE_V2 accounting and comparable ledgers",
+        "authorization": {
+            "gpu_execution": False,
+            "restart_i4h_automatically": False,
+            "purchase_cloud_compute_automatically": False,
+            "cloud_cost_report_if_projected_local_gpu_hours_gt": 24,
+        },
+        "run_count": len(rows),
+    }
+    return protocol, rows
+
+
+def write_resource_matched_sensitivity_protocol(
+    catalog: dict[str, Any],
+    out_dir: Path,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    protocol, rows = build_resource_matched_sensitivity_protocol(catalog, **kwargs)
+    _write_json(out_dir / "resource_matched_sensitivity_protocol.json", protocol)
+    fields = list(rows[0]) if rows else []
+    _write_csv(out_dir / "resource_matched_sensitivity_matrix.csv", rows, fields)
+    _write_json(out_dir / "resource_matched_sensitivity_matrix.json", rows)
+    return {"protocol": protocol, "matrix_path": str(out_dir / "resource_matched_sensitivity_matrix.json")}
+
+
+def build_heldout_transfer_protocol(
+    catalog: dict[str, Any],
+    *,
+    model: str = "gpt-5.6-sol",
+    provider: str = "CodexCLI",
+    output_dir: str = "benchmark_results/heldout_transfer_confirmatory",
+    trial_seeds: tuple[int, ...] = DEFAULT_TRIAL_SEEDS,
+    eval_backend: str = "ssh",
+    ssh_host: str = "ubuntu-heshi",
+    remote_project_root: str = "/media/heshi/game/fml-scientist/repo",
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Freeze the paper-eligible, previously unexposed transfer comparison."""
+    task_by_id = {task["task_id"]: task for task in catalog["tasks"]}
+    missing = sorted(set(HELDOUT_TRANSFER_TASKS) - set(task_by_id))
+    if missing:
+        raise ValueError(f"Held-out transfer tasks missing from catalog: {missing}")
+    tasks = [task_by_id[task_id] for task_id in HELDOUT_TRANSFER_TASKS]
+    agents = list(catalog["agents"]) + [{
+        "agent_id": "adaptive_pipeline",
+        "display_name": "Graph-bound adaptive pipeline",
+        "strategy_family": "graph_memory_adaptive_composition",
+        "config": "configs/local_extensions/adaptive_pipeline.yaml",
+    }]
+    trials = tuple(range(1, len(trial_seeds) + 1))
+    rows = _phase_rows(
+        phase="confirmatory_heldout_transfer",
+        agents=agents,
+        tasks=tasks,
+        trials=trials,
+        seeds=trial_seeds,
+        max_steps=8,
+        model=model,
+        provider=provider,
+        output_dir=output_dir,
+        eval_backend=eval_backend,
+        ssh_host=ssh_host,
+        remote_project_root=remote_project_root,
+        budget_profile="matched-v1",
+    )
+    rows = _freeze_execution_order(rows)
+    protocol = {
+        "schema_version": "fml-heldout-transfer-confirmatory-protocol-v1",
+        "status": "FROZEN_AWAITING_EXPOSURE_AUDIT_AND_EXECUTION",
+        "paper_claim_eligible": True,
+        "development_tasks": list(PILOT_TASKS),
+        "heldout_tasks": list(HELDOUT_TRANSFER_TASKS),
+        "selection_rule": (
+            "Before any held-out result is observed, choose the paired FML-Lite "
+            "task in each development domain: PrivacyMeter to Opacus and "
+            "DomainBed VLCS to DomainBed OfficeHome."
+        ),
+        "anti_cherry_pick_rule": (
+            "Both frozen held-out tasks, all eight agents, and all three seeds "
+            "remain in analysis regardless of failure or score."
+        ),
+        "model": model,
+        "provider": provider,
+        "controller_python": CONTROLLER_PYTHON,
+        "agents": [row["agent_id"] for row in agents],
+        "trial_seeds": list(trial_seeds),
+        "seed_interpretation": {
+            "role": "controller and research-agent stochasticity",
+            "not_claimed_as": "independent task-training seeds",
+            "task_evaluation_seed_policy": (
+                "Each held-out benchmark retains its checked-in fixed split/training seed; "
+                "the same task seed is shared across agents and agent trials."
+            ),
+            "replication_unit": "matched research-agent trial block",
+        },
+        "budget_profile": {
+            "name": "matched-v1",
+            "tokens": 120000,
+            "wall_clock_seconds": 7200,
+            "proposals": 8,
+            "reviews": 8,
+            "candidate_validations": 1,
+            "pre_test_validations": 1,
+            "protected_tests": 1,
+        },
+        "gpu_safety_contract": {
+            "sample_seconds": 5,
+            "warning_temperature_c": 82,
+            "abort_temperature_c": 88,
+            "thermal_throttle_abort_samples": 3,
+            "thermal_pacing_enabled": True,
+            "thermal_pacing_start_c": 78,
+            "thermal_pacing_resume_c": 72,
+        },
+        "analysis_policy": {
+            "unit": "agent-task-agent_seed run",
+            "primary_estimand": "paired mean FML normalized-improvement difference across frozen research-agent seed blocks",
+            "uncertainty": "paired seed-block Student-t interval and Cohen dz when defined",
+            "multiplicity": "Holm correction across unordered agent pairs",
+            "failures": "retain every run and apply the frozen FML fallback rule while reporting failure counts separately",
+            "protected_feedback": "never route protected metrics into search, memory, or skill evolution",
+        },
+        "required_pre_execution_artifacts": [
+            "heldout_exposure_audit.json",
+            "execution_authorization.json",
+            "cloud_runtime_cost_comparison.html",
+        ],
+        "authorization": {
+            "local_gpu_execution": True,
+            "cloud_purchase": False,
+            "restart_i4h_automatically": False,
+        },
+        "run_count": len(rows),
+    }
+    return protocol, rows
+
+
+def write_heldout_transfer_protocol(
+    catalog: dict[str, Any],
+    out_dir: Path,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    protocol, rows = build_heldout_transfer_protocol(catalog, **kwargs)
+    _write_json(out_dir / "heldout_transfer_protocol.json", protocol)
+    fields = list(rows[0]) if rows else []
+    _write_csv(out_dir / "heldout_transfer_matrix.csv", rows, fields)
+    _write_json(out_dir / "heldout_transfer_matrix.json", rows)
+    write_statistical_analysis_protocol(
+        out_dir,
+        primary_phase="confirmatory_heldout_transfer",
+        suite_label="the two frozen held-out transfer tasks",
+        seed_role="research-agent seed",
+    )
+    return {"protocol": protocol, "matrix_path": str(out_dir / "heldout_transfer_matrix.json")}
 
 
 def _freeze_execution_order(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -434,6 +680,46 @@ def _ssh_runner_status(
         f"if test -f {shlex.quote(str(Path(remote_base) / 'conda-envs' / env / '.fml_setup_complete'))}; then echo environment={shlex.quote(env)}; fi"
         for env in sorted(set(env_by_task.values()))
     )
+    heldout_data_specs = {
+        "Generalization_domainbed_officehome": (
+            str(Path(remote_project_root) / "workspace" / "Generalization_domainbed_officehome" / "data" / "office_home"),
+            10000,
+            str(Path(remote_base) / "cache" / "torch" / "hub" / "checkpoints" / "resnet50-0676ba61.pth"),
+            "0676ba61b6795bbe1773cffd859882e5e297624d384b6993f7c9e683e722fb8a",
+        ),
+        "Privacy_opacus": (
+            str(Path(remote_project_root) / "workspace" / "Privacy_opacus" / "opacus" / "data" / "cifar-10-batches-py"),
+            7,
+            "",
+            "",
+        ),
+    }
+    data_checks = []
+    for task, (data_path_value, minimum_files, artifact_path_value, artifact_sha256) in heldout_data_specs.items():
+        data_checks.append(f"""
+data_path={shlex.quote(data_path_value)}
+data_ready=no
+data_resolved=''
+data_count=0
+data_external=no
+artifact_path={shlex.quote(artifact_path_value)}
+artifact_sha256=''
+artifact_ready=yes
+if test -n "$artifact_path"; then
+  artifact_ready=no
+  if test -f "$artifact_path"; then
+    artifact_sha256=$(sha256sum "$artifact_path" | awk '{{print $1}}')
+    if test "$artifact_sha256" = {shlex.quote(artifact_sha256)}; then artifact_ready=yes; fi
+  fi
+fi
+if test -d "$data_path"; then
+  data_resolved=$(readlink -f "$data_path" 2>/dev/null || true)
+  data_count=$(find -L "$data_path" -type f 2>/dev/null | wc -l | xargs)
+  case "$data_resolved" in ({shlex.quote(remote_base)}/*) data_external=yes;; esac
+  if test "$data_count" -ge {minimum_files} && test "$data_external" = yes && test "$artifact_ready" = yes; then data_ready=yes; fi
+fi
+printf 'data=%s|%s|%s|%s|%s|%s|%s|%s\n' {shlex.quote(task)} "$data_ready" "$data_resolved" "$data_count" "$data_external" "$artifact_path" "$artifact_sha256" "$artifact_ready"
+""")
     script = f"""
 set -u
 printf 'platform='; . /etc/os-release; printf '%s %s|' "$NAME" "$VERSION_ID"; uname -m
@@ -444,6 +730,7 @@ printf 'gpu='; nvidia-smi --query-gpu=name,memory.total,driver_version --format=
 printf 'remote_project_root_exists='; test -d {shlex.quote(remote_project_root)} && echo yes || echo no
 {checks}
 {env_checks}
+{''.join(data_checks)}
 exit 0
 """
     try:
@@ -467,11 +754,28 @@ exit 0
     values: dict[str, str] = {}
     present_tasks = set()
     present_environments = set()
+    data_tasks: dict[str, dict[str, Any]] = {}
     for line in result.stdout.splitlines():
         if line.startswith("task="):
             present_tasks.add(line.split("=", 1)[1])
         elif line.startswith("environment="):
             present_environments.add(line.split("=", 1)[1])
+        elif line.startswith("data="):
+            parts = line.split("=", 1)[1].split("|", 7)
+            if len(parts) >= 5:
+                task, ready, resolved, count, external = parts[:5]
+                artifact_path = parts[5] if len(parts) > 5 else ""
+                artifact_sha256 = parts[6] if len(parts) > 6 else ""
+                artifact_ready = parts[7] if len(parts) > 7 else "yes"
+                data_tasks[task] = {
+                    "ready": ready == "yes",
+                    "resolved_path": resolved or None,
+                    "file_count": int(count or 0),
+                    "external_disk": external == "yes",
+                    "required_model_artifact": artifact_path or None,
+                    "model_artifact_sha256": artifact_sha256 or None,
+                    "model_artifact_ready": artifact_ready == "yes",
+                }
         elif "=" in line:
             key, value = line.split("=", 1)
             values[key] = value
@@ -488,6 +792,7 @@ exit 0
         "environment_tasks": {
             task: env_by_task[task] in present_environments for task in task_names
         },
+        "heldout_data_tasks": data_tasks,
     }
 
 
@@ -633,12 +938,14 @@ def preflight_environment(
     if remote is not None:
         workspace_tasks = remote["workspace_tasks"]
         environment_tasks = remote["environment_tasks"]
+        heldout_data_tasks = remote.get("heldout_data_tasks", {})
     else:
         workspace_tasks = {
             task["task_id"]: (repo / Path(task["repository"]).parts[0] / Path(task["repository"]).parts[1]).is_dir()
             for task in catalog["tasks"]
         }
         environment_tasks = _local_environment_tasks(catalog, env_tool)
+        heldout_data_tasks = {}
     lite_task_names = [task["task_id"] for task in catalog["tasks"] if task["lite"]]
     lite_workspace_tasks = {task: workspace_tasks[task] for task in lite_task_names}
     lite_environment_tasks = {task: environment_tasks[task] for task in lite_task_names}
@@ -646,6 +953,10 @@ def preflight_environment(
     lite_workspace_ready = all(lite_workspace_tasks.values())
     full_environment_ready = all(environment_tasks.values())
     lite_environment_ready = all(lite_environment_tasks.values())
+    heldout_data_ready = (
+        all(heldout_data_tasks.get(task, {}).get("ready") for task in HELDOUT_TRANSFER_TASKS)
+        if remote is not None else None
+    )
     blockers = []
     if env_tool is None:
         blockers.append("No conda, mamba, or micromamba executable is available.")
@@ -678,8 +989,12 @@ def preflight_environment(
         blockers.append("One or more FML-Lite task workspaces have not been bootstrapped by setup.py.")
     if not lite_environment_ready:
         blockers.append("One or more FML-Lite conda environments are missing a completed setup marker.")
+    if remote is not None and not heldout_data_ready:
+        blockers.append(
+            "One or more held-out transfer datasets or required pretrained model artifacts are missing, incomplete, hash-mismatched, or not resolved below the Ubuntu external-disk project root."
+        )
     return {
-        "schema_version": "fml-scientist-preflight-v3",
+        "schema_version": "fml-scientist-preflight-v4",
         "ready": not blockers,
         "ready_for_confirmatory_lite": not blockers,
         "ready_for_full_extension": not blockers and full_workspace_ready and full_environment_ready,
@@ -711,6 +1026,8 @@ def preflight_environment(
         "lite_environment_task_total": len(lite_environment_tasks),
         "lite_environment_tasks": lite_environment_tasks,
         "full_environment_ready": full_environment_ready,
+        "heldout_data_ready": heldout_data_ready,
+        "heldout_data_tasks": heldout_data_tasks,
         "blockers": blockers,
     }
 
